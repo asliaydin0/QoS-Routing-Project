@@ -40,20 +40,19 @@ Bu metrikler ileride ağırlıklı toplam yöntemi ile birleştirilecektir.
 
 ## 👥 Proje Ekibi
 
-Aslı AYDIN
-Senanur ŞAHİN
-Eylül EJDEROĞLU
-Mert Can AYDIN
-İbrahim USLU
-Hakan YAVUZ
-Husam ABDULRAHEEM
-Khofifrcc
-Mutiapriani
+Aslı AYDIN  
+Senanur ŞAHİN  
+Eylül EJDEROĞLU  
+Mert Can AYDIN  
+İbrahim USLU  
+Hakan YAVUZ  
+Husam ABDULRAHEEM  
+Khofifrcc  
+Mutiapriani  
 
 
 ---
 
 > ## 📌 Not
-
-> Proje ilerledikçe kod yapısı, algoritma açıklamaları, test sonuçları ve rapor detayları aşamalı olarak eklenecektir.
+Proje ilerledikçe kod yapısı, algoritma açıklamaları, test sonuçları ve rapor detayları aşamalı olarak eklenecektir.
 
