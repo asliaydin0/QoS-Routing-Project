@@ -53,6 +53,6 @@ Mutiapriani
 
 ---
 
-> ## 📌 Not
-Proje ilerledikçe kod yapısı, algoritma açıklamaları, test sonuçları ve rapor detayları aşamalı olarak eklenecektir.
+> ## 📌 Not:
+> Proje ilerledikçe kod yapısı, algoritma açıklamaları, test sonuçları ve rapor detayları aşamalı olarak eklenecektir.
 
