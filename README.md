@@ -8,8 +8,8 @@ Aşağıdaki adımlar, projeye kod eklemek/algoritma geliştirmek veya var olan 
 
 ### 1️⃣ Reponun bilgisayara indirilmesi
 ```bash
-git clone <https://github.com/asliaydin0/QoS-Routing-Project>
-cd <QoS-Routing-Project>
+git clone https://github.com/asliaydin0/QoS-Routing-Project
+cd QoS-Routing-Project
 ```
 ### 2️⃣ Ana branch'i güncelleme (her çalışmaya başlamadan önce)
 ```bash
