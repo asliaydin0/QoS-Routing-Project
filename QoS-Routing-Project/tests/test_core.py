@@ -1,30 +1,37 @@
-# test_core.py ← TAM OLARAK BÖYLE OLSUN
-
+import networkx as nx
 from core.network_generator import generate_network
-from core.metrics import calculate_delay, calculate_reliability_cost, calculate_resource_cost, calculate_total_cost
-import random
+from core.metrics import (
+    calculate_delay,
+    calculate_reliability_cost,
+    calculate_resource_cost,
+    calculate_total_cost
+)
 
-print("Ağ üretiliyor...")
-G = generate_network(n_nodes=250, p=0.4, seed=12345)  # 12345 kesin çalışıyor (test ettim)
-
-print(f"Başarılı → {G.number_of_nodes()} düğüm, {G.number_of_edges()} kenar")
-
-# GARANTİLİ YOL BUL (BFS ile en kısa yol)
-from networkx import shortest_path
-start = 0
-goal = 249
-
-try:
-    path = shortest_path(G, source=start, target=goal)
-    print(f"\nEN KISA YOL BULUNDU → {len(path)} düğüm: {path[:10]}... → {goal}")
+def test_generate_network():
+    G = generate_network(n_nodes=250, p=0.4, seed=12345)
     
-    print("\nMETRİKLER:")
-    print(f"Toplam Gecikme        : {calculate_delay(path, G):.3f} ms")
-    print(f"Güvenilirlik Maliyeti : {calculate_reliability_cost(path, G):.6f}")
-    print(f"Kaynak Maliyeti       : {calculate_resource_cost(path, G):.4f}")
-    print(f"Total Cost (0.5-0.3-0.2): {calculate_total_cost(path, G, 0.5, 0.3, 0.2):.4f}")
-    print(f"Total Cost (0.2-0.6-0.2): {calculate_total_cost(path, G, 0.2, 0.6, 0.2):.4f}")
-    print("\nCORE %100 ÇALIŞIYOR! Artık GA yazmaya geçebilirsin")
-    
-except:
-    print("Bu seed'de bile yol yok (çok nadir). seed=9999 dene.")
+    # Test 1: node sayısı doğru mu?
+    assert G.number_of_nodes() == 250, "Node sayısı yanlış!"
+
+    # Test 2: en az bir edge olmalı
+    assert G.number_of_edges() > 0, "Graf tamamen boş!"
+
+def test_shortest_path_metrics():
+    G = generate_network(n_nodes=250, p=0.4, seed=12345)
+
+    start, goal = 0, 249
+    path = nx.shortest_path(G, source=start, target=goal)
+
+    # Test 3: path bulunmalı
+    assert len(path) > 1, "Shortest path bulunamadı!"
+
+    delay = calculate_delay(path, G)
+    reliability = calculate_reliability_cost(path, G)
+    resource = calculate_resource_cost(path, G)
+    total = calculate_total_cost(path, G, 0.5, 0.3, 0.2)
+
+    # Test 4: metrikler pozitif olmalı
+    assert delay > 0
+    assert reliability > 0
+    assert resource > 0
+    assert total > 0
