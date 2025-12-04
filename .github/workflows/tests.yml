@@ -20,12 +20,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f QoS-Routing-Project/requirements.txt ]; then pip install -r QoS-Routing-Project/requirements.txt; fi
           pip install pytest
 
       - name: Add project root to PYTHONPATH
-        run: |
-          echo "PYTHONPATH=$PYTHONPATH:${{ github.workspace }}" >> $GITHUB_ENV
+        run: echo "PYTHONPATH=$PYTHONPATH:${{ github.workspace }}/QoS-Routing-Project" >> $GITHUB_ENV
 
       - name: Run tests
-        run: pytest -v
+        run: pytest QoS-Routing-Project/tests -v
