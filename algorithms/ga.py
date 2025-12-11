@@ -290,6 +290,15 @@ class GeneticAlgorithmRouter:
         best_solution = self.population[0]
         return best_solution[1], best_solution[0]
 
+
+def find_ga_path(G, src, dst, demand):
+    """
+    Bu fonksiyon GitHub testlerinin kodumuzu çağırabilmesi için eklenmiştir.
+    Arka planda GeneticAlgorithmRouter sınıfını kullanır.
+    """
+    ga = GeneticAlgorithmRouter(G, src, dst, demand)
+    return ga.run()
+
 # =============================================================================
 # 4. ANA ÇALIŞTIRMA VE RAPORLAMA BLOĞU
 # =============================================================================
