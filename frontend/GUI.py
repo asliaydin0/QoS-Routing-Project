@@ -1,5 +1,8 @@
 import sys
+import time
 import math
+import random
+import itertools
 from pathlib import Path
 
 # PyQt5 Kütüphaneleri
@@ -13,16 +16,6 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 import networkx as nx
-
-# ==========================================================
-# Backend import (comparison.py proje kökünde)
-# ==========================================================
-PROJE_KOKU = Path(__file__).resolve().parents[1]
-if str(PROJE_KOKU) not in sys.path:
-    sys.path.insert(0, str(PROJE_KOKU))
-
-from comparison import get_graph_and_demands, run_single
-
 
 # Yüksek Çözünürlük Ayarı
 if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
@@ -43,35 +36,49 @@ THEME = {
     "PATH_COLOR": "#921717"     # Seçilen Yol Rengi
 }
 
+# ==========================================================
+#  BACKEND IMPORT (comparison.py)
+# ==========================================================
+PROJE_KOKU = Path(__file__).resolve().parent
+if str(PROJE_KOKU) not in sys.path:
+    sys.path.insert(0, str(PROJE_KOKU))
+
+from comparison import run_single  # comparison.py içinde olmalı
+
 
 # ==========================================================
-#  BACKEND YOK: Worker sadece comparison.py çağırır
+#  Worker Thread: backend run_single() çağırır
 # ==========================================================
 class RoutingWorker(QThread):
     finished = pyqtSignal(list, float, dict)
     error = pyqtSignal(str)
 
-    def __init__(self, G, src, dst, demand_mbps, algo_key):
+    def __init__(self, algo_key, G, src, dst, weights):
         super().__init__()
+        self.algo_key = algo_key
         self.G = G
         self.src = src
         self.dst = dst
-        self.demand_mbps = demand_mbps
-        self.algo_key = algo_key
+        self.weights = weights
 
     def run(self):
         try:
             path, cost, metrics = run_single(
-                self.algo_key, self.G, self.src, self.dst, self.demand_mbps
+                algo_key=self.algo_key,
+                G=self.G,
+                src=self.src,
+                dst=self.dst,
+                weights=self.weights
             )
-            self.finished.emit(path or [], cost, metrics or {})
+            self.finished.emit(path or [], float(cost), metrics or {})
         except Exception as e:
             self.error.emit(str(e))
 
 
 # ==========================================================
-#  FRONTEND (UI) - AYNI
+#  FRONTEND (UI) — AYNEN KALSIN
 # ==========================================================
+
 class GraphCanvas(FigureCanvas):
     def __init__(self, parent=None):
         self.fig, self.ax = plt.subplots()
@@ -91,10 +98,9 @@ class GraphCanvas(FigureCanvas):
 
         try:
             self.pos = nx.spring_layout(G, seed=42, iterations=30)
-        except Exception:
+        except:
             self.pos = nx.random_layout(G, seed=42)
 
-        # Görsel Ayarlar
         nx.draw_networkx_edges(
             G, self.pos,
             edge_color="#404855",
@@ -131,11 +137,7 @@ class GraphCanvas(FigureCanvas):
             )
 
             labels = {node: str(node) for node in path}
-            nx.draw_networkx_labels(
-                G, self.pos, labels,
-                font_size=8, font_color="white", font_weight="bold",
-                ax=self.ax
-            )
+            nx.draw_networkx_labels(G, self.pos, labels, font_size=8, font_color="white", font_weight="bold", ax=self.ax)
 
         self.ax.set_axis_off()
         self.fig.tight_layout()
@@ -170,26 +172,33 @@ class Window(QtWidgets.QWidget):
         self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
         self.resize(1450, 850)
 
-        # UI değişmesin diye aynı fonksiyon ismi bırakıldı
         self.generate_initial_graph()
         self.build_ui()
 
     def generate_initial_graph(self):
-        # ESKİ RANDOM GRAPH YOK -> backend'den yükle
-        G, df_demand = get_graph_and_demands()
-        if G is None:
-            raise RuntimeError("Graph yüklenemedi! datalar/CSV dosyalarını kontrol edin.")
-        self.G = G
-        self.df_demand = df_demand
+        print("250 Düğümlü Ağ Oluşturuluyor... Lütfen bekleyin.")
+        self.N = 250
+        self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
 
-        # UI validasyonu için N gerekliydi
-        self.N = self.G.number_of_nodes()
+        for u, v in self.G.edges():
+            self.G[u][v]['bandwidth'] = random.randint(100, 1000)
+            self.G[u][v]['delay'] = random.randint(3, 15)
+            self.G[u][v]['reliability'] = round(random.uniform(0.95, 0.999), 4)
 
-        # Eğer node id'ler 0..N-1 değilse, uyarı vermeyelim diye max id alalım
-        try:
-            self.max_node_id = max(self.G.nodes())
-        except Exception:
-            self.max_node_id = self.N - 1
+        for n in self.G.nodes():
+            self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
+            self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+
+    # ✅ algo key mapping
+    def _algo_key(self) -> str:
+        t = self.algo_combo.currentText()
+        if "(GA)" in t:
+            return "GA"
+        if "(RL)" in t:
+            return "Q"
+        if "(ABC)" in t:
+            return "ABC"
+        return "SA"
 
     def build_ui(self):
         main_layout = QtWidgets.QHBoxLayout(self)
@@ -204,7 +213,15 @@ class Window(QtWidgets.QWidget):
         algo_group = QtWidgets.QGroupBox("Algoritma Seçimi")
         algo_layout = QtWidgets.QVBoxLayout()
         self.algo_combo = QtWidgets.QComboBox()
-        self.algo_combo.addItems(["Genetik Algoritma (GA)", "Karınca Kolonisi (ACO)"])
+
+        # ✅ 4 algoritma
+        self.algo_combo.addItems([
+            "Genetik Algoritma (GA)",
+            "Q-Öğrenme (RL)",
+            "Yapay Arı Kolonisi (ABC)",
+            "Benzetimli Tavlama (SA)",
+        ])
+
         self.algo_combo.setMinimumHeight(35)
         algo_layout.addWidget(QtWidgets.QLabel("Yöntem:"))
         algo_layout.addWidget(self.algo_combo)
@@ -215,7 +232,7 @@ class Window(QtWidgets.QWidget):
         route_group = QtWidgets.QGroupBox("Rota Ayarları")
         route_layout = QtWidgets.QFormLayout()
         self.src_edit = QtWidgets.QLineEdit("0")
-        self.dst_edit = QtWidgets.QLineEdit(str(getattr(self, "max_node_id", self.N - 1)))
+        self.dst_edit = QtWidgets.QLineEdit(str(self.N - 1))
         self.src_edit.setMinimumHeight(30)
         self.dst_edit.setMinimumHeight(30)
         route_layout.addRow("Kaynak (S):", self.src_edit)
@@ -223,7 +240,7 @@ class Window(QtWidgets.QWidget):
         route_group.setLayout(route_layout)
         sidebar.addWidget(route_group)
 
-        # Sliderlar (UI aynı kalsın; backend ağırlıkları comparison.py içinde olabilir)
+        # Sliderlar
         weight_group = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları")
         w_layout = QtWidgets.QVBoxLayout()
         w_layout.setSpacing(12)
@@ -237,11 +254,9 @@ class Window(QtWidgets.QWidget):
             v_lbl.setAlignment(QtCore.Qt.AlignRight)
             top_row.addWidget(v_lbl)
             s = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            s.setRange(0, 100)
-            s.setValue(val)
+            s.setRange(0, 100); s.setValue(val)
             s.valueChanged.connect(lambda v, lb=v_lbl: lb.setText(str(v)))
-            l.addLayout(top_row)
-            l.addWidget(s)
+            l.addLayout(top_row); l.addWidget(s)
             w_layout.addLayout(l)
             return s
 
@@ -331,10 +346,8 @@ class Window(QtWidgets.QWidget):
         c3, self.val_res = create_card("Kaynak Maliyeti", "#ffeaa7", big=True)
         c4, self.val_total = create_card("Ağırlıklı Maliyet", "#a29bfe", big=True)
 
-        grid.addWidget(c1, 0, 0)
-        grid.addWidget(c2, 0, 1)
-        grid.addWidget(c3, 1, 0)
-        grid.addWidget(c4, 1, 1)
+        grid.addWidget(c1, 0, 0); grid.addWidget(c2, 0, 1)
+        grid.addWidget(c3, 1, 0); grid.addWidget(c4, 1, 1)
         right_layout.addWidget(grid_w)
 
         time_row = QtWidgets.QHBoxLayout()
@@ -367,35 +380,21 @@ class Window(QtWidgets.QWidget):
             return
 
         if src not in self.G.nodes or dst not in self.G.nodes:
-            QtWidgets.QMessageBox.warning(self, "Hata", f"Düğüm ID geçersiz! (Graf içinde olmalı)")
+            QtWidgets.QMessageBox.warning(self, "Hata", f"Düğüm 0 ile {self.N-1} arasında olmalı!")
             return
 
-        # UI sliderları değişmeden kalır; backend weights'i comparison.py içinde olabilir.
-        # Burada demand bilgisini demand datasından (varsa) alıyoruz, yoksa default.
-        demand_mbps = 10.0
-        try:
-            if self.df_demand is not None and len(self.df_demand) > 0:
-                demand_mbps = float(self.df_demand.iloc[0]["demand_mbps"])
-        except Exception:
-            pass
-
-        algo_name = self.algo_combo.currentText()
-
-        # UI'da ACO var ama backend comparison.py'de yoksa:
-        # Burada güvenli bir eşleme yapıyoruz.
-        # GA -> "GA"
-        # ACO -> "SA" (geçici eşleme) / istersen hata da verebiliriz.
-        if "GA" in algo_name:
-            algo_key = "GA"
-        else:
-            # ACO seçilirse, backend'de yoksa en azından çalışsın diye SA'ya yönlendiriyoruz.
-            algo_key = "SA"
+        w1 = self.delay_slider.value() / 100
+        w2 = self.rel_slider.value() / 100
+        w3 = self.res_slider.value() / 100
 
         self.run_button.setText("Hesaplanıyor...")
         self.run_button.setEnabled(False)
         self.algo_pill.setText("Hesaplanıyor...")
 
-        self.worker = RoutingWorker(self.G, src, dst, demand_mbps, algo_key)
+        algo_key = self._algo_key()
+
+        # ✅ DOĞRU SIRA: (algo_key, G, src, dst, weights)
+        self.worker = RoutingWorker(algo_key, self.G, src, dst, (w1, w2, w3))
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
@@ -404,22 +403,13 @@ class Window(QtWidgets.QWidget):
         self.run_button.setText("HESAPLA VE ÇİZ")
         self.run_button.setEnabled(True)
 
-        self.canvas.draw_graph(self.G, path if path else None)
+        self.canvas.draw_graph(self.G, path)
 
-        # Backend comparison.py metrics'i farklı olabilir.
-        # UI aynı kalsın diye:
-        # - total_cost ve time_ms varsa yaz
-        # - delay/rel/res yoksa '-' bas
-        total_cost = metrics.get("total_cost", cost)
-        time_ms = metrics.get("time_ms", 0.0)
-
-        self.val_total.setText(f"{total_cost:.4f}" if path else "---")
-        self.lbl_time_val.setText(f"{time_ms:.2f} ms")
-
-        # Breakdown yoksa UI bozulmasın:
-        self.val_delay.setText("-")
-        self.val_rel.setText("-")
-        self.val_res.setText("-")
+        self.val_delay.setText(f"{metrics.get('delay', 0):.2f} ms" if metrics.get("delay") is not None else "-")
+        self.val_rel.setText(f"{metrics.get('rel_cost', 0):.2f}" if metrics.get("rel_cost") is not None else "-")
+        self.val_res.setText(f"{metrics.get('res_cost', 0):.2f}" if metrics.get("res_cost") is not None else "-")
+        self.val_total.setText(f"{metrics.get('total_cost', cost):.4f}" if cost != float("inf") else "inf")
+        self.lbl_time_val.setText(f"{metrics.get('time_ms', 0):.2f} ms")
 
         path_str = " -> ".join(map(str, path)) if path else "-"
         self.lbl_path_nodes.setText(path_str)
@@ -430,8 +420,7 @@ class Window(QtWidgets.QWidget):
 
         self.path_box.setPlainText(
             f"Algoritma: {algo_name}\n"
-            f"Toplam Maliyet: {total_cost:.4f}\n"
-            f"Süre: {time_ms:.2f} ms\n"
+            f"Toplam Maliyet: {metrics.get('total_cost', cost)}\n"
             f"Yol: {path_str}"
         )
 
@@ -441,7 +430,6 @@ class Window(QtWidgets.QWidget):
         self.algo_pill.setText("Hata")
         QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
-    # --- TOOLTIP ---
     def on_mouse_move(self, event):
         if event.inaxes != self.canvas.ax:
             return
@@ -453,21 +441,16 @@ class Window(QtWidgets.QWidget):
         search_limit = 0.05
 
         for node, (x, y) in self.canvas.pos.items():
-            dist = math.sqrt((event.xdata - x) ** 2 + (event.ydata - y) ** 2)
+            dist = math.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
             if dist < search_limit and dist < min_dist:
                 min_dist = dist
                 closest_node = node
 
         if closest_node is not None:
             props = self.G.nodes[closest_node]
-            # Dataset'e göre node attribute isimleri farklı olabilir.
-            # Güvenli gösterim:
-            proc = props.get('processing_delay', props.get('proc_delay', '-'))
-            rel = props.get('reliability', '-')
-
             info_text = (f"<b>DÜĞÜM ID: {closest_node}</b><hr>"
-                         f"İşlem Süresi: {proc} ms<br>"
-                         f"Güvenilirlik: {rel}")
+                         f"İşlem Süresi: {props.get('processing_delay','-')} ms<br>"
+                         f"Güvenilirlik: {props.get('reliability','-')}")
             QtWidgets.QToolTip.showText(QCursor.pos(), info_text)
         else:
             QtWidgets.QToolTip.hideText()
@@ -477,7 +460,6 @@ if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # CSS İLE RENKLERİ UYGULA
     app.setStyleSheet(f"""
         QWidget {{ background-color: {THEME['MAIN_BG']}; color: {THEME['TEXT']}; font-family: 'Segoe UI', sans-serif; }}
         QGroupBox {{ border: 1px solid {THEME['BORDER']}; border-radius: 6px; margin-top: 10px; padding: 10px; font-weight: bold; }}
