@@ -2,226 +2,288 @@ import sys
 import math
 from pathlib import Path
 
-from PyQt5 import QtWidgets, QtCore
+# PyQt5 Kütüphaneleri
+from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QCursor
 
+# Grafik Kütüphaneleri
 import matplotlib
 matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 import networkx as nx
 
-
 # ==========================================================
-# comparison.py dosyasını (proje kökünde) import edebilmek için
-# proje kök dizinini sys.path'e ekliyoruz.
-# Bu kısmı DOLDURMA / DEĞİŞTİRME, olduğu gibi kalsın.
+# Backend import (comparison.py proje kökünde)
 # ==========================================================
 PROJE_KOKU = Path(__file__).resolve().parents[1]
 if str(PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(PROJE_KOKU))
 
-# Backend API (comparison.py içinde olmalı)
 from comparison import get_graph_and_demands, run_single
 
 
-# ==========================================================
-# Tema / Renk Paleti
-# ==========================================================
-TEMA = {
-    "ANA_BG": "#111828",
-    "KART_BG": "#1e293b",
-    "GRAFIK_BG": "#111828",
-    "CIZGI": "#3c4654",
-    "YAZI": "#f1f2f6",
-    "BUTON": "#7b2cff",
-    "BUTON_HOVER": "#6300A5",
-    "NODE": "#00d0ff",
-    "PATH": "#921717",
+# Yüksek Çözünürlük Ayarı
+if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
+# RENK PALETİ
+THEME = {
+    "MAIN_BG": "#111828",       # Ana Pencere Arka Planı
+    "CARD_BG": "#1e293b",       # Kartların Arka Planı
+    "GRAPH_BG": "#111828",      # Grafik Alanı Arka Planı
+    "BORDER": "#3c4654",        # Çerçeve Rengi
+    "TEXT": "#f1f2f6",          # Yazı Rengi
+    "BUTTON": "#7b2cff",        # Buton Rengi
+    "BUTTON_HOVER": "#6300A5",  # Buton Üzerine Gelince
+    "NODE_COLOR": "#00d0ff",    # Düğüm Rengi
+    "PATH_COLOR": "#921717"     # Seçilen Yol Rengi
 }
 
 
 # ==========================================================
-# Worker Thread: sadece backend run_single() çağırır
-# (Frontend burada algoritma yazmaz!)
+#  BACKEND YOK: Worker sadece comparison.py çağırır
 # ==========================================================
-class YonlendirmeIsci(QThread):
-    bitti = pyqtSignal(list, float, dict)
-    hata = pyqtSignal(str)
+class RoutingWorker(QThread):
+    finished = pyqtSignal(list, float, dict)
+    error = pyqtSignal(str)
 
-    def __init__(self, algo_key: str, G, kaynak: int, hedef: int, talep_mbps: float):
+    def __init__(self, G, src, dst, demand_mbps, algo_key):
         super().__init__()
-        self.algo_key = algo_key
         self.G = G
-        self.kaynak = kaynak
-        self.hedef = hedef
-        self.talep = talep_mbps
+        self.src = src
+        self.dst = dst
+        self.demand_mbps = demand_mbps
+        self.algo_key = algo_key
 
     def run(self):
         try:
-            yol, maliyet, metrik = run_single(
-                self.algo_key, self.G, self.kaynak, self.hedef, self.talep
+            path, cost, metrics = run_single(
+                self.algo_key, self.G, self.src, self.dst, self.demand_mbps
             )
-            self.bitti.emit(yol or [], maliyet, metrik or {})
+            self.finished.emit(path or [], cost, metrics or {})
         except Exception as e:
-            self.hata.emit(str(e))
+            self.error.emit(str(e))
 
 
 # ==========================================================
-# Grafik Tuvali (NetworkX çizimi)
+#  FRONTEND (UI) - AYNI
 # ==========================================================
-class GrafikTuval(FigureCanvas):
+class GraphCanvas(FigureCanvas):
     def __init__(self, parent=None):
         self.fig, self.ax = plt.subplots()
         super().__init__(self.fig)
         self.setParent(parent)
 
-        self.fig.patch.set_facecolor(TEMA["GRAFIK_BG"])
-        self.ax.set_facecolor(TEMA["GRAFIK_BG"])
-        self.pos = {}
+        self.fig.patch.set_facecolor(THEME["GRAPH_BG"])
+        self.ax.set_facecolor(THEME["GRAPH_BG"])
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.updateGeometry()
+        self.pos = {}
 
-    def graf_ciz(self, G, yol=None):
+    def draw_graph(self, G, path=None):
         self.ax.clear()
-        self.ax.set_facecolor(TEMA["GRAFIK_BG"])
+        self.ax.set_facecolor(THEME["GRAPH_BG"])
 
         try:
             self.pos = nx.spring_layout(G, seed=42, iterations=30)
         except Exception:
             self.pos = nx.random_layout(G, seed=42)
 
-        nx.draw_networkx_edges(G, self.pos, edge_color="#404855", width=0.25, alpha=0.45, ax=self.ax)
-        nx.draw_networkx_nodes(G, self.pos, node_size=26, node_color=TEMA["NODE"], ax=self.ax)
+        # Görsel Ayarlar
+        nx.draw_networkx_edges(
+            G, self.pos,
+            edge_color="#404855",
+            width=0.1,
+            alpha=0.5,
+            ax=self.ax
+        )
 
-        if yol and len(yol) > 1:
-            yol_kenarlar = list(zip(yol[:-1], yol[1:]))
-            nx.draw_networkx_edges(G, self.pos, edgelist=yol_kenarlar, width=2.5, edge_color=TEMA["PATH"], ax=self.ax)
-            nx.draw_networkx_nodes(G, self.pos, nodelist=yol, node_color=TEMA["PATH"], node_size=60, ax=self.ax)
-            etiketler = {n: str(n) for n in yol}
-            nx.draw_networkx_labels(G, self.pos, etiketler, font_size=8, font_color="white", font_weight="bold", ax=self.ax)
+        nx.draw_networkx_nodes(
+            G, self.pos,
+            node_size=30,
+            node_color=THEME["NODE_COLOR"],
+            ax=self.ax
+        )
+
+        if path is not None and len(path) > 1:
+            path_edges = list(zip(path[:-1], path[1:]))
+
+            nx.draw_networkx_edges(
+                G, self.pos,
+                edgelist=path_edges,
+                width=2.5,
+                edge_color=THEME["PATH_COLOR"],
+                alpha=1.0,
+                ax=self.ax
+            )
+
+            nx.draw_networkx_nodes(
+                G, self.pos,
+                nodelist=path,
+                node_color=THEME["PATH_COLOR"],
+                node_size=60,
+                ax=self.ax
+            )
+
+            labels = {node: str(node) for node in path}
+            nx.draw_networkx_labels(
+                G, self.pos, labels,
+                font_size=8, font_color="white", font_weight="bold",
+                ax=self.ax
+            )
 
         self.ax.set_axis_off()
         self.fig.tight_layout()
         self.draw()
 
 
-def kart_olustur(baslik, baslik_renk="#ffffff", buyuk=False):
+def create_card(title, title_color="#ffffff", big=False):
     frame = QtWidgets.QFrame()
-    frame.setObjectName("sonucKart")
+    frame.setObjectName("resultCard")
     layout = QtWidgets.QVBoxLayout(frame)
     layout.setContentsMargins(10, 8, 10, 8)
     layout.setSpacing(4)
 
-    lbl_baslik = QtWidgets.QLabel(baslik)
-    lbl_baslik.setStyleSheet(f"font-size: 11px; color: {baslik_renk}; font-weight: 600;")
-    layout.addWidget(lbl_baslik)
+    lbl_title = QtWidgets.QLabel(title)
+    lbl_title.setStyleSheet(f"font-size: 11px; color: {title_color}; font-weight: 600;")
+    layout.addWidget(lbl_title)
 
-    lbl_deger = QtWidgets.QLabel("-")
-    lbl_deger.setStyleSheet("font-size: 18px; font-weight: 700;" if buyuk else "font-size: 15px; font-weight: 600;")
-    layout.addWidget(lbl_deger)
+    lbl_value = QtWidgets.QLabel("-")
+    if big:
+        lbl_value.setStyleSheet("font-size: 18px; font-weight: 700;")
+    else:
+        lbl_value.setStyleSheet("font-size: 15px; font-weight: 600;")
+    layout.addWidget(lbl_value)
 
     layout.addStretch()
-    return frame, lbl_deger
+    return frame, lbl_value
 
 
-# ==========================================================
-# Ana Pencere (Frontend Only)
-# ==========================================================
-class Pencere(QtWidgets.QWidget):
+class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü (Sadece Frontend)")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
         self.resize(1450, 850)
 
-        # Graf ve demand verisini backend'den al
-        G, df_demand = get_graph_and_demands()
-        if G is None or df_demand is None:
-            raise RuntimeError("Veri yüklenemedi! 'datalar' klasörü ve CSV dosyalarını kontrol edin.")
+        # UI değişmesin diye aynı fonksiyon ismi bırakıldı
+        self.generate_initial_graph()
+        self.build_ui()
 
+    def generate_initial_graph(self):
+        # ESKİ RANDOM GRAPH YOK -> backend'den yükle
+        G, df_demand = get_graph_and_demands()
+        if G is None:
+            raise RuntimeError("Graph yüklenemedi! datalar/CSV dosyalarını kontrol edin.")
         self.G = G
         self.df_demand = df_demand
 
-        self.arayuz_kur()
-        self.canvas.graf_ciz(self.G)
+        # UI validasyonu için N gerekliydi
+        self.N = self.G.number_of_nodes()
 
-    def arayuz_kur(self):
-        ana = QtWidgets.QHBoxLayout(self)
-        ana.setContentsMargins(10, 10, 10, 10)
-        ana.setSpacing(15)
+        # Eğer node id'ler 0..N-1 değilse, uyarı vermeyelim diye max id alalım
+        try:
+            self.max_node_id = max(self.G.nodes())
+        except Exception:
+            self.max_node_id = self.N - 1
 
-        # ---------------- SOL PANEL ----------------
-        sol = QtWidgets.QVBoxLayout()
-        sol.setSpacing(15)
+    def build_ui(self):
+        main_layout = QtWidgets.QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(15)
 
+        # SOL PANEL
+        sidebar = QtWidgets.QVBoxLayout()
+        sidebar.setSpacing(15)
+
+        # Algoritma Seçimi
         algo_group = QtWidgets.QGroupBox("Algoritma Seçimi")
         algo_layout = QtWidgets.QVBoxLayout()
-
         self.algo_combo = QtWidgets.QComboBox()
-        self.algo_combo.addItems([
-            "Genetik Algoritma (GA)",
-            "Q-Öğrenme (RL)",
-            "Yapay Arı Kolonisi (ABC)",
-            "Benzetimli Tavlama (SA)",
-        ])
+        self.algo_combo.addItems(["Genetik Algoritma (GA)", "Karınca Kolonisi (ACO)"])
         self.algo_combo.setMinimumHeight(35)
-
         algo_layout.addWidget(QtWidgets.QLabel("Yöntem:"))
         algo_layout.addWidget(self.algo_combo)
         algo_group.setLayout(algo_layout)
-        sol.addWidget(algo_group)
+        sidebar.addWidget(algo_group)
 
-        senaryo_group = QtWidgets.QGroupBox("Senaryo (DemandData)")
-        senaryo_layout = QtWidgets.QFormLayout()
+        # Rota Ayarları
+        route_group = QtWidgets.QGroupBox("Rota Ayarları")
+        route_layout = QtWidgets.QFormLayout()
+        self.src_edit = QtWidgets.QLineEdit("0")
+        self.dst_edit = QtWidgets.QLineEdit(str(getattr(self, "max_node_id", self.N - 1)))
+        self.src_edit.setMinimumHeight(30)
+        self.dst_edit.setMinimumHeight(30)
+        route_layout.addRow("Kaynak (S):", self.src_edit)
+        route_layout.addRow("Hedef (D):", self.dst_edit)
+        route_group.setLayout(route_layout)
+        sidebar.addWidget(route_group)
 
-        self.senaryo_edit = QtWidgets.QLineEdit("1")
-        self.senaryo_edit.setMinimumHeight(30)
-        senaryo_layout.addRow("Senaryo ID:", self.senaryo_edit)
+        # Sliderlar (UI aynı kalsın; backend ağırlıkları comparison.py içinde olabilir)
+        weight_group = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları")
+        w_layout = QtWidgets.QVBoxLayout()
+        w_layout.setSpacing(12)
 
-        self.lbl_senaryo_bilgi = QtWidgets.QLabel("—")
-        self.lbl_senaryo_bilgi.setWordWrap(True)
-        self.lbl_senaryo_bilgi.setStyleSheet("font-size: 12px; color: #a5b1c2;")
-        senaryo_layout.addRow("Bilgi:", self.lbl_senaryo_bilgi)
+        def add_slider(label, val):
+            l = QtWidgets.QVBoxLayout()
+            l.setSpacing(2)
+            top_row = QtWidgets.QHBoxLayout()
+            top_row.addWidget(QtWidgets.QLabel(label))
+            v_lbl = QtWidgets.QLabel(str(val))
+            v_lbl.setAlignment(QtCore.Qt.AlignRight)
+            top_row.addWidget(v_lbl)
+            s = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            s.setRange(0, 100)
+            s.setValue(val)
+            s.valueChanged.connect(lambda v, lb=v_lbl: lb.setText(str(v)))
+            l.addLayout(top_row)
+            l.addWidget(s)
+            w_layout.addLayout(l)
+            return s
 
-        senaryo_group.setLayout(senaryo_layout)
-        sol.addWidget(senaryo_group)
+        self.delay_slider = add_slider("Gecikme (Delay)", 40)
+        self.rel_slider = add_slider("Güvenilirlik (Reliability)", 30)
+        self.res_slider = add_slider("Kaynak (Resource)", 30)
+        weight_group.setLayout(w_layout)
+        sidebar.addWidget(weight_group)
 
-        self.run_btn = QtWidgets.QPushButton("ÇALIŞTIR")
-        self.run_btn.setMinimumHeight(50)
-        self.run_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.run_btn.clicked.connect(self.calistir)
-        sol.addWidget(self.run_btn)
+        # Buton
+        self.run_button = QtWidgets.QPushButton("HESAPLA VE ÇİZ")
+        self.run_button.setMinimumHeight(50)
+        self.run_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.run_button.clicked.connect(self.run_routing)
+        sidebar.addWidget(self.run_button)
+        sidebar.addStretch()
 
-        sol.addStretch()
+        sidebar_widget = QtWidgets.QWidget()
+        sidebar_widget.setLayout(sidebar)
+        sidebar_widget.setFixedWidth(360)
+        main_layout.addWidget(sidebar_widget)
 
-        sol_w = QtWidgets.QWidget()
-        sol_w.setLayout(sol)
-        sol_w.setFixedWidth(360)
-        ana.addWidget(sol_w)
+        # ORTA PANEL
+        center_layout = QtWidgets.QVBoxLayout()
+        title_graph = QtWidgets.QLabel(f"Ağ Topolojisi ({self.N} Düğüm)")
+        title_graph.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 5px;")
+        center_layout.addWidget(title_graph)
 
-        # ---------------- ORTA PANEL ----------------
-        orta = QtWidgets.QVBoxLayout()
+        self.canvas = GraphCanvas(self)
+        self.canvas.setStyleSheet("background-color: transparent;")
+        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        center_layout.addWidget(self.canvas)
+        main_layout.addLayout(center_layout, 1)
 
-        baslik = QtWidgets.QLabel("Ağ Topolojisi (Graph)")
-        baslik.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 5px;")
-        orta.addWidget(baslik)
+        # SAĞ PANEL
+        right_layout = QtWidgets.QVBoxLayout()
+        right_layout.setSpacing(10)
 
-        self.canvas = GrafikTuval(self)
-        self.canvas.mpl_connect("motion_notify_event", self.mouse_hareket)
-        orta.addWidget(self.canvas)
-
-        ana.addLayout(orta, 1)
-
-        # ---------------- SAĞ PANEL ----------------
-        sag = QtWidgets.QVBoxLayout()
-        sag.setSpacing(10)
-
-        header = QtWidgets.QHBoxLayout()
-        lbl_sonuc = QtWidgets.QLabel("Sonuçlar")
-        lbl_sonuc.setStyleSheet("font-size: 16px; font-weight: bold;")
-        header.addWidget(lbl_sonuc)
+        header_layout = QtWidgets.QHBoxLayout()
+        lbl_results = QtWidgets.QLabel("Sonuçlar")
+        lbl_results.setStyleSheet("font-size: 16px; font-weight: bold;")
+        header_layout.addWidget(lbl_results)
 
         self.algo_pill = QtWidgets.QLabel("—")
         self.algo_pill.setAlignment(QtCore.Qt.AlignCenter)
@@ -235,154 +297,178 @@ class Pencere(QtWidgets.QWidget):
                 font-size: 11px;
             }
         """)
-        header.addStretch()
-        header.addWidget(self.algo_pill)
-        sag.addLayout(header)
+        header_layout.addStretch()
+        header_layout.addWidget(self.algo_pill)
+        right_layout.addLayout(header_layout)
 
-        self.yol_frame = QtWidgets.QFrame()
-        self.yol_frame.setObjectName("sonucKart")
-        yol_layout = QtWidgets.QVBoxLayout(self.yol_frame)
+        self.path_frame = QtWidgets.QFrame()
+        self.path_frame.setObjectName("resultCard")
+        pf_layout = QtWidgets.QVBoxLayout(self.path_frame)
 
-        top_row = QtWidgets.QHBoxLayout()
-        lbl_yol = QtWidgets.QLabel("Bulunan Yol")
-        lbl_yol.setStyleSheet("font-size: 12px; font-weight: 600;")
-        self.lbl_hop = QtWidgets.QLabel("(0 sıçrama)")
-        self.lbl_hop.setStyleSheet("font-size: 11px; color: #a5b1c2;")
-        top_row.addWidget(lbl_yol)
-        top_row.addStretch()
-        top_row.addWidget(self.lbl_hop)
-        yol_layout.addLayout(top_row)
+        top_path_row = QtWidgets.QHBoxLayout()
+        self.lbl_path_title = QtWidgets.QLabel("Bulunan Yol")
+        self.lbl_path_title.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.lbl_hops = QtWidgets.QLabel("(0 sıçrama)")
+        self.lbl_hops.setStyleSheet("font-size: 11px; color: #a5b1c2;")
+        top_path_row.addWidget(self.lbl_path_title)
+        top_path_row.addStretch()
+        top_path_row.addWidget(self.lbl_hops)
+        pf_layout.addLayout(top_path_row)
 
-        self.lbl_yol_dugumler = QtWidgets.QLabel("-")
-        self.lbl_yol_dugumler.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {TEMA['PATH']};")
-        self.lbl_yol_dugumler.setWordWrap(True)
-        yol_layout.addWidget(self.lbl_yol_dugumler)
+        self.lbl_path_nodes = QtWidgets.QLabel("-")
+        self.lbl_path_nodes.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {THEME['PATH_COLOR']};")
+        self.lbl_path_nodes.setWordWrap(True)
+        pf_layout.addWidget(self.lbl_path_nodes)
+        right_layout.addWidget(self.path_frame)
 
-        sag.addWidget(self.yol_frame)
+        grid_w = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(grid_w)
+        grid.setSpacing(8)
+        grid.setContentsMargins(0, 0, 0, 0)
 
-        c1, self.val_maliyet = kart_olustur("Toplam Maliyet", "#a29bfe", buyuk=True)
-        c2, self.val_sure = kart_olustur("Süre (ms)", "#4da3ff", buyuk=True)
-        c3, self.val_uzunluk = kart_olustur("Yol Uzunluğu", "#55efc4", buyuk=True)
+        c1, self.val_delay = create_card("Toplam Gecikme", "#4da3ff", big=True)
+        c2, self.val_rel = create_card("Güvenilirlik", "#55efc4", big=True)
+        c3, self.val_res = create_card("Kaynak Maliyeti", "#ffeaa7", big=True)
+        c4, self.val_total = create_card("Ağırlıklı Maliyet", "#a29bfe", big=True)
 
-        sag.addWidget(c1)
-        sag.addWidget(c2)
-        sag.addWidget(c3)
+        grid.addWidget(c1, 0, 0)
+        grid.addWidget(c2, 0, 1)
+        grid.addWidget(c3, 1, 0)
+        grid.addWidget(c4, 1, 1)
+        right_layout.addWidget(grid_w)
 
-        self.log_box = QtWidgets.QPlainTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setPlaceholderText("Log...")
-        sag.addWidget(self.log_box)
+        time_row = QtWidgets.QHBoxLayout()
+        lbl_time_title = QtWidgets.QLabel("Hesaplama Süresi")
+        lbl_time_title.setStyleSheet("font-size: 11px; color: #a5b1c2;")
+        self.lbl_time_val = QtWidgets.QLabel("- ms")
+        self.lbl_time_val.setStyleSheet("font-size: 13px; font-weight: 600;")
+        time_row.addWidget(lbl_time_title)
+        time_row.addStretch()
+        time_row.addWidget(self.lbl_time_val)
+        right_layout.addLayout(time_row)
 
-        sag_w = QtWidgets.QWidget()
-        sag_w.setLayout(sag)
-        sag_w.setFixedWidth(280)
-        ana.addWidget(sag_w)
+        self.path_box = QtWidgets.QPlainTextEdit()
+        self.path_box.setReadOnly(True)
+        self.path_box.setPlaceholderText("Log kayıtları...")
+        right_layout.addWidget(self.path_box)
 
-    def _algo_key(self) -> str:
-        t = self.algo_combo.currentText()
-        if "(GA)" in t:
-            return "GA"
-        if "(RL)" in t:
-            return "Q"
-        if "(ABC)" in t:
-            return "ABC"
-        return "SA"
+        right_widget = QtWidgets.QWidget()
+        right_widget.setLayout(right_layout)
+        right_widget.setFixedWidth(280)
+        main_layout.addWidget(right_widget)
 
-    def calistir(self):
+        self.canvas.draw_graph(self.G)
+
+    def run_routing(self):
         try:
-            sid = int(self.senaryo_edit.text())
+            src = int(self.src_edit.text())
+            dst = int(self.dst_edit.text())
         except ValueError:
-            QtWidgets.QMessageBox.warning(self, "Hata", "Lütfen geçerli bir Senaryo ID girin.")
             return
 
-        if sid < 1 or sid > len(self.df_demand):
-            QtWidgets.QMessageBox.warning(self, "Hata", f"Senaryo ID 1 ile {len(self.df_demand)} arasında olmalı!")
+        if src not in self.G.nodes or dst not in self.G.nodes:
+            QtWidgets.QMessageBox.warning(self, "Hata", f"Düğüm ID geçersiz! (Graf içinde olmalı)")
             return
 
-        row = self.df_demand.iloc[sid - 1]
-
-        # DemandData kolonları: src, dst, demand_mbps (comparison.py böyle okuyor)
+        # UI sliderları değişmeden kalır; backend weights'i comparison.py içinde olabilir.
+        # Burada demand bilgisini demand datasından (varsa) alıyoruz, yoksa default.
+        demand_mbps = 10.0
         try:
-            src = int(row["src"])
-            dst = int(row["dst"])
-            bw = float(row["demand_mbps"])
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Hata", f"DemandData kolonları beklenenden farklı: {e}")
-            return
+            if self.df_demand is not None and len(self.df_demand) > 0:
+                demand_mbps = float(self.df_demand.iloc[0]["demand_mbps"])
+        except Exception:
+            pass
 
-        self.lbl_senaryo_bilgi.setText(f"{src} -> {dst} | Talep: {bw} Mbps")
-
-        algo_key = self._algo_key()
         algo_name = self.algo_combo.currentText()
 
-        self.run_btn.setText("Çalışıyor...")
-        self.run_btn.setEnabled(False)
-        self.algo_pill.setText(algo_name)
+        # UI'da ACO var ama backend comparison.py'de yoksa:
+        # Burada güvenli bir eşleme yapıyoruz.
+        # GA -> "GA"
+        # ACO -> "SA" (geçici eşleme) / istersen hata da verebiliriz.
+        if "GA" in algo_name:
+            algo_key = "GA"
+        else:
+            # ACO seçilirse, backend'de yoksa en azından çalışsın diye SA'ya yönlendiriyoruz.
+            algo_key = "SA"
 
-        self.worker = YonlendirmeIsci(algo_key, self.G, src, dst, bw)
-        self.worker.bitti.connect(self.bitti)
-        self.worker.hata.connect(self.hata)
+        self.run_button.setText("Hesaplanıyor...")
+        self.run_button.setEnabled(False)
+        self.algo_pill.setText("Hesaplanıyor...")
+
+        self.worker = RoutingWorker(self.G, src, dst, demand_mbps, algo_key)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error.connect(self.on_error)
         self.worker.start()
 
-    def bitti(self, yol, maliyet, metrik):
-        self.run_btn.setText("ÇALIŞTIR")
-        self.run_btn.setEnabled(True)
+    def on_finished(self, path, cost, metrics):
+        self.run_button.setText("HESAPLA VE ÇİZ")
+        self.run_button.setEnabled(True)
 
-        if yol:
-            self.canvas.graf_ciz(self.G, yol)
-            yol_str = " -> ".join(map(str, yol))
-            self.lbl_yol_dugumler.setText(yol_str)
-            self.lbl_hop.setText(f"({len(yol)-1} sıçrama)")
-        else:
-            self.canvas.graf_ciz(self.G, None)
-            self.lbl_yol_dugumler.setText("-")
-            self.lbl_hop.setText("(0 sıçrama)")
+        self.canvas.draw_graph(self.G, path if path else None)
 
-        toplam_maliyet = metrik.get("total_cost", maliyet)
-        sure_ms = metrik.get("time_ms", 0.0)
-        yol_uzunluk = metrik.get("path_len", len(yol) if yol else 0)
+        # Backend comparison.py metrics'i farklı olabilir.
+        # UI aynı kalsın diye:
+        # - total_cost ve time_ms varsa yaz
+        # - delay/rel/res yoksa '-' bas
+        total_cost = metrics.get("total_cost", cost)
+        time_ms = metrics.get("time_ms", 0.0)
 
-        self.val_maliyet.setText(f"{toplam_maliyet:.4f}" if yol else "---")
-        self.val_sure.setText(f"{sure_ms:.2f}")
-        self.val_uzunluk.setText(str(yol_uzunluk))
+        self.val_total.setText(f"{total_cost:.4f}" if path else "---")
+        self.lbl_time_val.setText(f"{time_ms:.2f} ms")
 
-        self.log_box.setPlainText(
-            f"Algoritma: {metrik.get('algo','-')}\n"
-            f"Maliyet: {toplam_maliyet}\n"
-            f"Süre(ms): {sure_ms:.2f}\n"
-            f"Yol: {(' -> '.join(map(str, yol)) if yol else '-')}"
+        # Breakdown yoksa UI bozulmasın:
+        self.val_delay.setText("-")
+        self.val_rel.setText("-")
+        self.val_res.setText("-")
+
+        path_str = " -> ".join(map(str, path)) if path else "-"
+        self.lbl_path_nodes.setText(path_str)
+        self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(0 sıçrama)")
+
+        algo_name = self.algo_combo.currentText()
+        self.algo_pill.setText(algo_name)
+
+        self.path_box.setPlainText(
+            f"Algoritma: {algo_name}\n"
+            f"Toplam Maliyet: {total_cost:.4f}\n"
+            f"Süre: {time_ms:.2f} ms\n"
+            f"Yol: {path_str}"
         )
 
-    def hata(self, msg):
-        self.run_btn.setText("ÇALIŞTIR")
-        self.run_btn.setEnabled(True)
+    def on_error(self, msg):
+        self.run_button.setText("HESAPLA VE ÇİZ")
+        self.run_button.setEnabled(True)
         self.algo_pill.setText("Hata")
         QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
-    def mouse_hareket(self, event):
+    # --- TOOLTIP ---
+    def on_mouse_move(self, event):
         if event.inaxes != self.canvas.ax:
             return
         if event.xdata is None or event.ydata is None:
             return
 
-        en_yakin = None
-        min_dist = float("inf")
-        limit = 0.05
+        closest_node = None
+        min_dist = float('inf')
+        search_limit = 0.05
 
         for node, (x, y) in self.canvas.pos.items():
             dist = math.sqrt((event.xdata - x) ** 2 + (event.ydata - y) ** 2)
-            if dist < limit and dist < min_dist:
+            if dist < search_limit and dist < min_dist:
                 min_dist = dist
-                en_yakin = node
+                closest_node = node
 
-        if en_yakin is not None:
-            props = self.G.nodes[en_yakin]
-            bilgi = (
-                f"<b>DÜĞÜM: {en_yakin}</b><hr>"
-                f"proc_delay: {props.get('proc_delay', '-') }<br>"
-                f"reliability: {props.get('reliability', '-')}"
-            )
-            QtWidgets.QToolTip.showText(QCursor.pos(), bilgi)
+        if closest_node is not None:
+            props = self.G.nodes[closest_node]
+            # Dataset'e göre node attribute isimleri farklı olabilir.
+            # Güvenli gösterim:
+            proc = props.get('processing_delay', props.get('proc_delay', '-'))
+            rel = props.get('reliability', '-')
+
+            info_text = (f"<b>DÜĞÜM ID: {closest_node}</b><hr>"
+                         f"İşlem Süresi: {proc} ms<br>"
+                         f"Güvenilirlik: {rel}")
+            QtWidgets.QToolTip.showText(QCursor.pos(), info_text)
         else:
             QtWidgets.QToolTip.hideText()
 
@@ -391,17 +477,20 @@ if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
 
+    # CSS İLE RENKLERİ UYGULA
     app.setStyleSheet(f"""
-        QWidget {{ background-color: {TEMA['ANA_BG']}; color: {TEMA['YAZI']}; font-family: 'Segoe UI', sans-serif; }}
-        QGroupBox {{ border: 1px solid {TEMA['CIZGI']}; border-radius: 6px; margin-top: 10px; padding: 10px; font-weight: bold; }}
+        QWidget {{ background-color: {THEME['MAIN_BG']}; color: {THEME['TEXT']}; font-family: 'Segoe UI', sans-serif; }}
+        QGroupBox {{ border: 1px solid {THEME['BORDER']}; border-radius: 6px; margin-top: 10px; padding: 10px; font-weight: bold; }}
         QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
-        QPushButton {{ background-color: {TEMA['BUTON']}; border: none; border-radius: 5px; padding: 8px; font-weight: bold; color: white; }}
-        QPushButton:hover {{ background-color: {TEMA['BUTON_HOVER']}; }}
+        QPushButton {{ background-color: {THEME['BUTTON']}; border: none; border-radius: 5px; padding: 8px; font-weight: bold; color: white; }}
+        QPushButton:hover {{ background-color: {THEME['BUTTON_HOVER']}; }}
         QPushButton:disabled {{ background-color: #555; color: #aaa; }}
-        QLineEdit, QComboBox, QPlainTextEdit {{ background-color: #262c33; border: 1px solid {TEMA['CIZGI']}; border-radius: 4px; padding: 4px; color: white; }}
-        QFrame#sonucKart {{ background-color: {TEMA['KART_BG']}; border: 1px solid {TEMA['CIZGI']}; border-radius: 8px; }}
+        QLineEdit, QComboBox, QPlainTextEdit {{ background-color: #262c33; border: 1px solid {THEME['BORDER']}; border-radius: 4px; padding: 4px; color: white; }}
+        QFrame#resultCard {{ background-color: {THEME['CARD_BG']}; border: 1px solid {THEME['BORDER']}; border-radius: 8px; }}
+        QSlider::groove:horizontal {{ height: 4px; background: {THEME['BORDER']}; border-radius: 2px; }}
+        QSlider::handle:horizontal {{ width: 14px; margin: -5px 0; border-radius: 7px; background: {THEME['BUTTON']}; }}
     """)
 
-    win = Pencere()
+    win = Window()
     win.show()
     sys.exit(app.exec_())
