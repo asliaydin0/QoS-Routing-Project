@@ -39,7 +39,7 @@ THEME = {
 # ==========================================================
 #  BACKEND IMPORT (comparison.py)
 # ==========================================================
-PROJE_KOKU = Path(__file__).resolve().parent
+PROJE_KOKU = Path(__file__).resolve().parent.parent
 if str(PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(PROJE_KOKU))
 
