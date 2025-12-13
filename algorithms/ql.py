@@ -13,12 +13,12 @@ NODE_FILE = "BSM307_317_Guz2025_TermProject_NodeData(in).csv"
 EDGE_FILE = "BSM307_317_Guz2025_TermProject_EdgeData(in).csv"
 DEMAND_FILE = "BSM307_317_Guz2025_TermProject_DemandData(in).csv"
 
-# Genetik Algoritma Hiperparametreleri
-POPULATION_SIZE = 60      # Popülasyon büyüklüğü
-GENERATIONS = 100         # Jenerasyon sayısı
-MUTATION_RATE = 0.3       # Mutasyon olasılığı
-ELITISM_COUNT = 4         # Her nesilde korunan en iyi birey sayısı
-REPETITIONS = 5           # Her senaryo için tekrar sayısı
+# Q-Learning Hiperparametreleri
+ALPHA = 0.1          # Öğrenme Oranı (Learning Rate)
+GAMMA = 0.9          # Gelecek Ödül Çarpanı (Discount Factor)
+EPSILON = 0.1        # Keşfetme Oranı (Exploration Rate)
+EPISODES = 500       # Her senaryo için eğitim turu sayısı
+REPETITIONS = 5      # Her senaryo için tekrar sayısı (İstatistik için)
 
 # Optimizasyon Ağırlıkları (Toplam = 1.0)
 W_DELAY = 0.33
@@ -82,19 +82,36 @@ def load_data():
     return G, df_demand
 
 # =============================================================================
-# 3. GENETİK ALGORİTMA SINIFI
+# 3. Q-LEARNING ALGORİTMA SINIFI
 # =============================================================================
-class GeneticAlgorithmRouter:
+class QLearningRouter:
     def __init__(self, G, source, target, demand):
         self.G = G
         self.source = source
         self.target = target
         self.demand = demand
-        self.population = [] 
+        
+        # Parametreler
+        self.alpha = ALPHA
+        self.gamma = GAMMA
+        self.epsilon = EPSILON
+        self.episodes = EPISODES
+        
+        # Q-Tablosu: Q[düğüm][komşu] -> Değer
+        self.Q = {}
+        self._initialize_q_table()
+
+    def _initialize_q_table(self):
+        """Ağdaki her düğüm ve komşusu için Q değerlerini 0 yapar."""
+        for node in self.G.nodes():
+            self.Q[node] = {}
+            for neighbor in self.G.neighbors(node):
+                self.Q[node][neighbor] = 0.0
 
     def calculate_fitness(self, path):
-        """Maliyet Hesaplama (Düşük Maliyet = İyi Yol)"""
-        # 1. Yol Geçerliliği Kontrolü
+        """
+        GA ile aynı maliyet fonksiyonu (Karşılaştırma için).
+        """
         if not path or path[0] != self.source or path[-1] != self.target:
             return float('inf')
 
@@ -102,7 +119,7 @@ class GeneticAlgorithmRouter:
         total_rel_log = 0 
         resource_cost = 0
 
-        # 2. Düğüm Maliyetleri (Ara düğümler)
+        # Düğüm Maliyetleri
         if len(path) > 2:
             for node in path[1:-1]:
                 if node not in self.G: return float('inf')
@@ -111,7 +128,7 @@ class GeneticAlgorithmRouter:
                 r_node = d.get('reliability', 0.999)
                 total_rel_log += -np.log(r_node if r_node > 0 else 1e-9)
 
-        # 3. Kenar (Link) Maliyetleri
+        # Kenar Maliyetleri
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
             if not self.G.has_edge(u, v): return float('inf')
@@ -125,168 +142,150 @@ class GeneticAlgorithmRouter:
             bw = edge.get('bandwidth', 100)
             resource_cost += (1000.0 / bw)
 
-        # 4. Toplam Ağırlıklı Maliyet
         total_cost = (W_DELAY * total_delay) + \
                      (W_RELIABILITY * total_rel_log) + \
                      (W_RESOURCE * resource_cost)
         
         return total_cost
 
-    def generate_random_path(self):
-        """DFS tabanlı rastgele geçerli yol oluşturucu."""
+    def get_step_reward(self, u, v):
+        """
+        Bir adımdaki maliyetin negatifi ödüldür.
+        Reward = - (Cost(u,v))
+        """
+        edge = self.G[u][v]
+        node_v = self.G.nodes[v]
+        
+        # 1. Gecikme
+        delay = edge.get('link_delay', 0) + node_v.get('proc_delay', 0)
+        
+        # 2. Güvenilirlik (Logaritmik Ceza)
+        r_link = edge.get('reliability', 0.999)
+        r_node = node_v.get('reliability', 0.999)
+        rel_cost = -np.log(r_link if r_link > 0 else 1e-9) + \
+                   -np.log(r_node if r_node > 0 else 1e-9)
+        
+        # 3. Kaynak
+        bw = edge.get('bandwidth', 100)
+        res_cost = (1000.0 / bw)
+        
+        step_cost = (W_DELAY * delay) + \
+                    (W_RELIABILITY * rel_cost) + \
+                    (W_RESOURCE * res_cost)
+        
+        # Hedefe ulaşmak büyük ödül, normal adım küçük ceza (maliyet)
+        if v == self.target:
+            return 1000.0 - step_cost
+        else:
+            return -step_cost
+
+    def choose_action(self, current_node):
+        """Epsilon-Greedy ile sonraki düğümü seç."""
+        neighbors = list(self.G.neighbors(current_node))
+        if not neighbors:
+            return None
+        
+        # Keşfetme (Exploration)
+        if random.random() < self.epsilon:
+            return random.choice(neighbors)
+        
+        # Sömürme (Exploitation) - En iyi Q değerine git
+        # Eğer Q değerleri eşitse rastgele seç (argmax'ın rastgele versiyonu)
+        q_values = [self.Q[current_node][n] for n in neighbors]
+        max_q = max(q_values)
+        
+        # En iyi olanların hepsini bul (eşitlik durumunda)
+        best_candidates = [n for n, q in zip(neighbors, q_values) if q == max_q]
+        return random.choice(best_candidates)
+
+    def train(self):
+        """Ajanı eğitir."""
+        for episode in range(self.episodes):
+            curr = self.source
+            steps = 0
+            
+            while curr != self.target and steps < 250:
+                nxt = self.choose_action(curr)
+                if nxt is None: break # Çıkmaz sokak
+                
+                # Ödülü al
+                reward = self.get_step_reward(curr, nxt)
+                
+                # Bellman Denklemi
+                old_q = self.Q[curr][nxt]
+                
+                # Gelecekteki max Q
+                next_neighbors = list(self.G.neighbors(nxt))
+                if next_neighbors:
+                    future_q = max([self.Q[nxt][n] for n in next_neighbors])
+                else:
+                    future_q = 0.0
+                
+                # Güncelleme
+                new_q = old_q + self.alpha * (reward + (self.gamma * future_q) - old_q)
+                self.Q[curr][nxt] = new_q
+                
+                curr = nxt
+                steps += 1
+
+    def reconstruct_path(self):
+        """Eğitimden sonra Q tablosuna bakarak en iyi yolu çizer (Greedy)."""
         path = [self.source]
-        current = self.source
+        curr = self.source
         visited = {self.source}
         
-        while current != self.target:
-            neighbors = [n for n in self.G.neighbors(current) if n not in visited]
+        while curr != self.target:
+            neighbors = list(self.G.neighbors(curr))
+            if not neighbors: return None
             
-            if not neighbors: return None # Çıkmaz sokak
+            # Döngüye girmemek için ziyaret edilmemişlerden en iyisini seç
+            valid_neighbors = [n for n in neighbors if n not in visited]
+            if not valid_neighbors: return None
             
-            # Hedef komşulardaysa oraya gitme şansını artır
-            if self.target in neighbors:
-                next_node = self.target
-            else:
-                next_node = random.choice(neighbors)
+            # En yüksek Q değerine sahip komşuyu seç
+            nxt = max(valid_neighbors, key=lambda n: self.Q[curr].get(n, -float('inf')))
             
-            path.append(next_node)
-            visited.add(next_node)
+            path.append(nxt)
+            visited.add(nxt)
+            curr = nxt
             
-            # Çok uzun yolları engelle (Performans için limit: 250)
             if len(path) > 250: return None
-            
-            current = next_node
-            
-        return path
-
-    def initialize_population(self):
-        """Başlangıç popülasyonunu oluşturur."""
-        self.population = []
-        
-        # En kısa yolu ekleyerek kaliteyi artır (Heuristic Seeding)
-        try:
-            sp = nx.shortest_path(self.G, self.source, self.target, weight='delay')
-            self.population.append((self.calculate_fitness(sp), sp))
-        except:
-            pass 
-
-        attempts = 0
-        max_attempts = POPULATION_SIZE * 10
-        
-        # Rastgele yollarla doldur
-        while len(self.population) < POPULATION_SIZE and attempts < max_attempts:
-            path = self.generate_random_path()
-            if path:
-                cost = self.calculate_fitness(path)
-                if cost != float('inf'):
-                    self.population.append((cost, path))
-            attempts += 1
-        
-        self.population.sort(key=lambda x: x[0])
-
-    def crossover(self, parent1, parent2):
-        """Path-Based Crossover"""
-        common = list(set(parent1[1:-1]) & set(parent2[1:-1]))
-        if not common: return parent1
-        
-        pivot = random.choice(common)
-        idx1, idx2 = parent1.index(pivot), parent2.index(pivot)
-        
-        child = parent1[:idx1] + parent2[idx2:]
-        return child if len(child) == len(set(child)) else parent1
-
-    def mutate(self, path):
-        """Path Repair Mutation"""
-        if len(path) < 4: return path
-        
-        cut_point = random.randint(1, len(path)-2)
-        node = path[cut_point]
-        
-        partial_path = path[:cut_point+1]
-        current = node
-        visited = set(partial_path)
-        
-        for _ in range(50):
-            if current == self.target: return partial_path
-            
-            neighbors = [n for n in self.G.neighbors(current) if n not in visited]
-            if not neighbors: return path
-            
-            if self.target in neighbors:
-                current = self.target
-            else:
-                current = random.choice(neighbors)
-            
-            partial_path.append(current)
-            visited.add(current)
             
         return path
 
     def run(self):
-        """Algoritmayı çalıştırır."""
-        self.initialize_population()
-        if not self.population: return None, float('inf')
-
-        for gen in range(GENERATIONS):
-            new_pop = []
-            new_pop.extend(self.population[:ELITISM_COUNT])
-            
-            while len(new_pop) < POPULATION_SIZE:
-                candidates = random.sample(self.population, min(5, len(self.population)))
-                parent1 = min(candidates, key=lambda x: x[0])[1]
-                
-                candidates = random.sample(self.population, min(5, len(self.population)))
-                parent2 = min(candidates, key=lambda x: x[0])[1]
-                
-                child = self.crossover(parent1, parent2)
-                
-                if random.random() < MUTATION_RATE:
-                    child = self.mutate(child)
-                
-                cost = self.calculate_fitness(child)
-                if cost != float('inf'):
-                    new_pop.append((cost, child))
-            
-            self.population = sorted(new_pop, key=lambda x: x[0])
-            
-        best_solution = self.population[0]
-        return best_solution[1], best_solution[0]
+        """Dışarıdan çağrılan ana metod."""
+        self.train()
+        best_path = self.reconstruct_path()
+        
+        if best_path:
+            cost = self.calculate_fitness(best_path)
+            return best_path, cost
+        else:
+            return None, float('inf')
 
 # =============================================================================
 # 4. GITHUB VE TEST UYUMLULUĞU İÇİN WRAPPER FONKSİYON
 # =============================================================================
-def find_ga_path(G, src=None, dst=None, demand=0, seed=None, **kwargs):
+def find_ql_path(G, src=None, dst=None, demand=0, seed=None, **kwargs):
     """
-    Bu fonksiyon GitHub testlerinin kodumuzu çağırabilmesi için güncellenmiştir.
-    Hem 'src/dst' hem de testlerin kullandığı 'start/goal' parametrelerini destekler.
-    Ayrıca seed ayarı yapar ve testlerin beklediği 3'lü çıktıyı verir.
+    Q-Learning için köprü fonksiyonu (GA ile aynı imza).
     """
+    if src is None: src = kwargs.get('start')
+    if dst is None: dst = kwargs.get('goal')
     
-    # 1. Alias (Takma Ad) Yönetimi: Testler 'start' ve 'goal' kullanıyor olabilir
-    if src is None:
-        src = kwargs.get('start')
-    if dst is None:
-        dst = kwargs.get('goal')
-        
     if src is None or dst is None:
-        # Eğer hala None ise, hata vermek yerine boş dönelim (test çökmemesi için)
         return None, float('inf'), {}
 
-    # 2. Seed Ayarı: Testler deterministik sonuç için seed gönderiyor
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
-        
-    # 3. Algoritmayı Çalıştır
-    # demand verilmemişse varsayılan 0 olarak gider
-    ga = GeneticAlgorithmRouter(G, src, dst, demand)
-    path, cost = ga.run()
+
+    ql = QLearningRouter(G, src, dst, demand)
+    path, cost = ql.run()
     
-    # 4. Dönüş Değeri: Testler (path, cost, metrics) bekliyor
-    # Bizim metrics hesaplamamız olmadığı için boş sözlük {} dönüyoruz.
-    metrics = {} 
-    
-    return path, cost, metrics
+    # Metrics şimdilik boş
+    return path, cost, {}
 
 # =============================================================================
 # 5. ANA ÇALIŞTIRMA VE RAPORLAMA BLOĞU
@@ -298,7 +297,7 @@ if __name__ == "__main__":
         experiment_results = []
         
         print("\n" + "="*80)
-        print(f"DENEY BAŞLIYOR: Toplam {len(df_demand)} Senaryo, Her biri {REPETITIONS} tekrar.")
+        print(f"Q-LEARNING DENEYİ BAŞLIYOR: {len(df_demand)} Senaryo x {REPETITIONS} Tekrar")
         print("="*80 + "\n")
         
         total_scenarios = len(df_demand)
@@ -308,43 +307,42 @@ if __name__ == "__main__":
             dst = int(row['dst'])
             demand = row['demand_mbps']
             
-            scenario_costs = []
-            scenario_times = []
+            costs = []
+            times = []
             best_path_str = "Yok"
             
-            print(f"[{idx+1}/{total_scenarios}] Senaryo: {src} -> {dst} ({demand} Mbps) işleniyor...")
+            print(f"[{idx+1}/{total_scenarios}] Senaryo: {src} -> {dst} ({demand} Mbps)...")
             
             for rep in range(REPETITIONS):
                 start_time = time.time()
                 
-                ga = GeneticAlgorithmRouter(G, src, dst, demand)
-                path, cost = ga.run()
+                ql = QLearningRouter(G, src, dst, demand)
+                path, cost = ql.run()
                 
                 duration = time.time() - start_time
                 
                 if path:
-                    scenario_costs.append(cost)
-                    scenario_times.append(duration)
-                    if cost == min(scenario_costs):
+                    costs.append(cost)
+                    times.append(duration)
+                    if cost == min(costs):
                         best_path_str = str(path)
                 else:
-                    scenario_costs.append(float('inf'))
-                    scenario_times.append(duration)
+                    costs.append(float('inf'))
+                    times.append(duration)
 
-            # --- İstatistikleri Hesapla ---
-            valid_costs = [c for c in scenario_costs if c != float('inf')]
+            valid_costs = [c for c in costs if c != float('inf')]
             
             if valid_costs:
                 mean_val = np.mean(valid_costs)
                 std_val = np.std(valid_costs)
                 best_val = np.min(valid_costs)
                 worst_val = np.max(valid_costs)
-                avg_time = np.mean(scenario_times)
+                avg_time = np.mean(times)
                 status = "SUCCESS"
             else:
                 mean_val = std_val = best_val = worst_val = avg_time = 0
                 status = "FAIL"
-            # Sonuçları listeye ekle
+
             experiment_results.append({
                 "Scenario_ID": idx + 1,
                 "Source": src,
@@ -358,16 +356,16 @@ if __name__ == "__main__":
                 "Avg_Time_Sec": round(avg_time, 4),
                 "Best_Path_Found": best_path_str
             })
-            # Anlık Bilgi Bas
+            
             if status == "SUCCESS":
-                print(f"   >>> Tamamlandı. En İyi Maliyet: {best_val:.4f}, Ort. Süre: {avg_time:.3f}s")
+                print(f"   >>> Tamamlandı. En İyi: {best_val:.4f}, Ort. Süre: {avg_time:.3f}s")
             else:
                 print(f"   >>> BAŞARISIZ (Yol Bulunamadı)")
-        # --- CSV'ye Kaydet ---
-        output_file = "Genetik_Algoritma_Sonuclar.csv"
+
+        output_file = "Q_Learning_Sonuclar.csv"
         df_res = pd.DataFrame(experiment_results)
         df_res.to_csv(output_file, sep=';', index=False)
         
         print("\n" + "="*80)
-        print(f"TÜM İŞLEMLER BİTTİ. Sonuçlar '{output_file}' dosyasına kaydedildi.")
+        print(f"SONUÇLAR KAYDEDİLDİ: {output_file}")
         print("="*80)
