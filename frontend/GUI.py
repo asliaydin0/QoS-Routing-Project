@@ -77,7 +77,7 @@ class RoutingWorker(QThread):
 
 
 # ==========================================================
-#  FRONTEND (UI) — AYNI KALSIN
+#  FRONTEND (UI) — 
 # ==========================================================
 
 class GraphCanvas(FigureCanvas):
