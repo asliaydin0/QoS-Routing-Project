@@ -170,7 +170,7 @@ def create_card(title, title_color="#ffffff", big=False):
 class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü")
         self.resize(1450, 850)
 
         self.generate_initial_graph()
@@ -182,15 +182,18 @@ class Window(QtWidgets.QWidget):
         self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
 
         for u, v in self.G.edges():
-            self.G[u][v]['bandwidth'] = random.randint(100, 1000)
-            self.G[u][v]['delay'] = random.randint(3, 15)
-            self.G[u][v]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+            bw = random.randint(100, 1000)
+            self.G[u][v]["bandwidth"] = bw
+            self.G[u][v]["capacity"] = bw
+            self.G[u][v]["delay"] = random.randint(3, 15)
+            self.G[u][v]["reliability"] = round(random.uniform(0.95, 0.999), 4)
 
         for n in self.G.nodes():
-            self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
-            self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+            self.G.nodes[n]["processing_delay"] = round(random.uniform(0.5, 2.0), 2)
+            self.G.nodes[n]["reliability"] = round(random.uniform(0.95, 0.999), 4)
 
-    # ✅ algoritma anahtarı eşlemesi
+
+    # algoritma anahtarı eşlemesi
     def _algo_key(self) -> str:
         t = self.algo_combo.currentText()
         if "(GA)" in t:
@@ -394,7 +397,7 @@ class Window(QtWidgets.QWidget):
 
         algo_key = self._algo_key()
 
-        # ✅ Doğru sıra: (algo_key, G, src, dst, weights)
+        # Doğru sıra: (algo_key, G, src, dst, weights)
         self.worker = RoutingWorker(algo_key, self.G, src, dst, (w1, w2, w3))
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
