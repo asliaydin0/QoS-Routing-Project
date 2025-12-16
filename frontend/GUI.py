@@ -17,7 +17,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 import networkx as nx
 
-# Yüksek Çözünürlük Ayarı
+# Yüksek Çözünürlük Ayarları
 if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
 if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
@@ -38,16 +38,17 @@ THEME = {
 
 # ==========================================================
 #  BACKEND IMPORT (comparison.py)
+#  DÜZELTME: Yol, proje kök dizinine işaret etmeli (frontend klasörü değil)
 # ==========================================================
-PROJE_KOKU = Path(__file__).resolve().parent.parent
+PROJE_KOKU = Path(__file__).resolve().parent.parent  # <-- DÜZELTME BURADA
 if str(PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(PROJE_KOKU))
 
-from comparison import run_single  # comparison.py içinde olmalı
+from comparison import run_single  # comparison.py proje kök dizininde olmalı
 
 
 # ==========================================================
-#  Worker Thread: backend run_single() çağırır
+#  Worker Thread: backend run_single() fonksiyonunu çağırır
 # ==========================================================
 class RoutingWorker(QThread):
     finished = pyqtSignal(list, float, dict)
@@ -76,7 +77,7 @@ class RoutingWorker(QThread):
 
 
 # ==========================================================
-#  FRONTEND (UI) — AYNEN KALSIN
+#  FRONTEND (UI) — 
 # ==========================================================
 
 class GraphCanvas(FigureCanvas):
@@ -169,7 +170,7 @@ def create_card(title, title_color="#ffffff", big=False):
 class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü")
         self.resize(1450, 850)
 
         self.generate_initial_graph()
@@ -181,15 +182,18 @@ class Window(QtWidgets.QWidget):
         self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
 
         for u, v in self.G.edges():
-            self.G[u][v]['bandwidth'] = random.randint(100, 1000)
-            self.G[u][v]['delay'] = random.randint(3, 15)
-            self.G[u][v]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+            bw = random.randint(100, 1000)
+            self.G[u][v]["bandwidth"] = bw
+            self.G[u][v]["capacity"] = bw
+            self.G[u][v]["delay"] = random.randint(3, 15)
+            self.G[u][v]["reliability"] = round(random.uniform(0.95, 0.999), 4)
 
         for n in self.G.nodes():
-            self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
-            self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+            self.G.nodes[n]["processing_delay"] = round(random.uniform(0.5, 2.0), 2)
+            self.G.nodes[n]["reliability"] = round(random.uniform(0.95, 0.999), 4)
 
-    # ✅ algo key mapping
+
+    # algoritma anahtarı eşlemesi
     def _algo_key(self) -> str:
         t = self.algo_combo.currentText()
         if "(GA)" in t:
@@ -393,7 +397,7 @@ class Window(QtWidgets.QWidget):
 
         algo_key = self._algo_key()
 
-        # ✅ DOĞRU SIRA: (algo_key, G, src, dst, weights)
+        # Doğru sıra: (algo_key, G, src, dst, weights)
         self.worker = RoutingWorker(algo_key, self.G, src, dst, (w1, w2, w3))
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
