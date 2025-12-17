@@ -16,8 +16,10 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
 import networkx as nx
+from matplotlib.lines import Line2D
 
-# Yüksek Çözünürlük Ayarları
+
+# Yüksek Çözünürlük Ayarı
 if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
 if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
@@ -38,17 +40,16 @@ THEME = {
 
 # ==========================================================
 #  BACKEND IMPORT (comparison.py)
-#  DÜZELTME: Yol, proje kök dizinine işaret etmeli (frontend klasörü değil)
 # ==========================================================
-PROJE_KOKU = Path(__file__).resolve().parent.parent  # <-- DÜZELTME BURADA
+PROJE_KOKU = Path(__file__).resolve().parent.parent
 if str(PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(PROJE_KOKU))
 
-from comparison import run_single  # comparison.py proje kök dizininde olmalı
+from comparison import run_single  # comparison.py içinde olmalı
 
 
 # ==========================================================
-#  Worker Thread: backend run_single() fonksiyonunu çağırır
+#  Worker Thread: backend run_single() çağırır
 # ==========================================================
 class RoutingWorker(QThread):
     finished = pyqtSignal(list, float, dict)
@@ -77,7 +78,7 @@ class RoutingWorker(QThread):
 
 
 # ==========================================================
-#  FRONTEND (UI) — 
+#  FRONTEND (UI) — AYNEN KALSIN
 # ==========================================================
 
 class GraphCanvas(FigureCanvas):
@@ -93,15 +94,18 @@ class GraphCanvas(FigureCanvas):
         self.updateGeometry()
         self.pos = {}
 
-    def draw_graph(self, G, path=None):
+    def draw_graph(self, G, path=None, src=None, dst=None):
+
         self.ax.clear()
         self.ax.set_facecolor(THEME["GRAPH_BG"])
 
+        # Layout
         try:
             self.pos = nx.spring_layout(G, seed=42, iterations=30)
-        except:
+        except Exception:
             self.pos = nx.random_layout(G, seed=42)
 
+        # Kenarlar
         nx.draw_networkx_edges(
             G, self.pos,
             edge_color="#404855",
@@ -110,39 +114,119 @@ class GraphCanvas(FigureCanvas):
             ax=self.ax
         )
 
+        all_nodes = list(G.nodes())
+
+        # Kaynak & hedef ayır
+        special_nodes = set()
+        if src is not None:
+            special_nodes.add(src)
+        if dst is not None:
+            special_nodes.add(dst)
+
+        normal_nodes = [n for n in all_nodes if n not in special_nodes]
+
+        # Normal düğümler
         nx.draw_networkx_nodes(
             G, self.pos,
+            nodelist=normal_nodes,
             node_size=30,
             node_color=THEME["NODE_COLOR"],
+            alpha=0.9,
             ax=self.ax
         )
 
+        # Kaynak (S)
+        if src is not None:
+            nx.draw_networkx_nodes(
+                G, self.pos,
+                nodelist=[src],
+                node_color="#22c55e",
+                node_size=100,
+                ax=self.ax
+            )
+
+        # Hedef (D)
+        if dst is not None:
+            nx.draw_networkx_nodes(
+                G, self.pos,
+                nodelist=[dst],
+                node_color="#ef4444",
+                node_size=100,
+                ax=self.ax
+            )
+
+        # Yol varsa
         if path is not None and len(path) > 1:
             path_edges = list(zip(path[:-1], path[1:]))
 
             nx.draw_networkx_edges(
                 G, self.pos,
                 edgelist=path_edges,
-                width=2.5,
+                width=2.8,
                 edge_color=THEME["PATH_COLOR"],
                 alpha=1.0,
                 ax=self.ax
             )
 
+            path_nodes = [
+                n for n in path
+                if n not in (src, dst)
+            ]
+
             nx.draw_networkx_nodes(
                 G, self.pos,
-                nodelist=path,
+                nodelist=path_nodes,
                 node_color=THEME["PATH_COLOR"],
-                node_size=60,
+                node_size=70,
+                ax=self.ax
+                            )
+            
+        # 🔁 Kaynak & hedefi EN SON tekrar çiz (üstte kalsın)
+        if src is not None:
+            nx.draw_networkx_nodes(
+                G, self.pos,
+                nodelist=[src],
+                node_color="#22c55e",
+                node_size=100,
                 ax=self.ax
             )
 
-            labels = {node: str(node) for node in path}
-            nx.draw_networkx_labels(G, self.pos, labels, font_size=8, font_color="white", font_weight="bold", ax=self.ax)
+        if dst is not None:
+            nx.draw_networkx_nodes(
+                G, self.pos,
+                nodelist=[dst],
+                node_color="#ef4444",
+                node_size=100,
+                ax=self.ax
+            )
+        
+            legend_elements = [
+        Line2D([0], [0], marker='o', color='none',
+            markerfacecolor="#22c55e", markersize=8, label="Kaynak"),
+
+        Line2D([0], [0], marker='o', color='none',
+            markerfacecolor="#ef4444", markersize=8, label="Hedef"),
+
+        Line2D([0], [0], marker='o', color='none',
+            markerfacecolor=THEME["PATH_COLOR"], markersize=8, label="Yol"),
+
+        Line2D([0], [0], marker='o', color='none',
+            markerfacecolor=THEME["NODE_COLOR"], markersize=8, label="Diğer"),
+                            ]
+            self.ax.legend(
+        handles=legend_elements,
+        loc="upper left",
+        frameon=True,
+        facecolor=THEME["GRAPH_BG"],
+        edgecolor="#374151",
+        labelcolor="white",
+        fontsize=9
+                   )
 
         self.ax.set_axis_off()
         self.fig.tight_layout()
         self.draw()
+
 
 
 def create_card(title, title_color="#ffffff", big=False):
@@ -170,9 +254,10 @@ def create_card(title, title_color="#ffffff", big=False):
 class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
         self.resize(1450, 850)
 
+        self.compare_data = []
         self.generate_initial_graph()
         self.build_ui()
 
@@ -182,18 +267,15 @@ class Window(QtWidgets.QWidget):
         self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
 
         for u, v in self.G.edges():
-            bw = random.randint(100, 1000)
-            self.G[u][v]["bandwidth"] = bw
-            self.G[u][v]["capacity"] = bw
-            self.G[u][v]["delay"] = random.randint(3, 15)
-            self.G[u][v]["reliability"] = round(random.uniform(0.95, 0.999), 4)
+            self.G[u][v]['bandwidth'] = random.randint(100, 1000)
+            self.G[u][v]['delay'] = random.randint(3, 15)
+            self.G[u][v]['reliability'] = round(random.uniform(0.95, 0.999), 4)
 
         for n in self.G.nodes():
-            self.G.nodes[n]["processing_delay"] = round(random.uniform(0.5, 2.0), 2)
-            self.G.nodes[n]["reliability"] = round(random.uniform(0.95, 0.999), 4)
+            self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
+            self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
 
-
-    # algoritma anahtarı eşlemesi
+    # ✅ algo key mapping
     def _algo_key(self) -> str:
         t = self.algo_combo.currentText()
         if "(GA)" in t:
@@ -368,6 +450,27 @@ class Window(QtWidgets.QWidget):
         self.path_box.setReadOnly(True)
         self.path_box.setPlaceholderText("Log kayıtları...")
         right_layout.addWidget(self.path_box)
+        
+        # =======================
+        # Karşılaştırma Tablosu
+        # =======================
+        self.btn_compare = QtWidgets.QPushButton("Karşılaştırma Tablosu")
+        self.btn_compare.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.btn_compare.setStyleSheet("""
+        QPushButton {
+            background-color: #111827;
+            color: #e5e7eb;
+            border: 1px solid #2a3442;
+            padding: 10px;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #0f172a;
+        }
+        """)
+        self.btn_compare.clicked.connect(self.show_compare_dialog)
+        right_layout.addWidget(self.btn_compare)
 
         right_widget = QtWidgets.QWidget()
         right_widget.setLayout(right_layout)
@@ -375,6 +478,111 @@ class Window(QtWidgets.QWidget):
         main_layout.addWidget(right_widget)
 
         self.canvas.draw_graph(self.G)
+
+    def show_compare_dialog(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Karşılaştırma Tablosu")
+        dlg.resize(520, 320)
+
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        table = QtWidgets.QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Algoritma", "Maliyet", "Süre (ms)", "Adım"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setShowGrid(False)
+
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+
+        table.setStyleSheet("""
+        QTableWidget {
+            background-color: #0b1220;
+            color: #e5e7eb;
+            border: 1px solid #2a3442;
+            border-radius: 10px;
+            alternate-background-color: #0f172a;
+            font-size: 12px;
+        }
+        QHeaderView::section {
+            background-color: #111827;
+            color: #93c5fd;
+            padding: 8px;
+            border: none;
+            font-weight: bold;
+        }
+        QTableWidget::item {
+            padding: 8px;
+            border: none;
+        }
+        QTableWidget::item:selected {
+            background-color: #1f2937;
+        }
+        """)
+
+        # Mevcut kayıtları dialog tablosuna doldur
+        data = getattr(self, "compare_data", [])
+
+        # En iyi (min) maliyeti bul
+        valid_costs = []
+        for row in data:
+            try:
+                if row[1] != "inf":
+                    valid_costs.append(float(row[1]))
+            except:
+                pass
+
+        best_cost = min(valid_costs) if valid_costs else None
+
+        table.setRowCount(len(data))
+
+        for r, row in enumerate(data):
+            cost_value = row[1]
+
+            for c, val in enumerate(row):
+                it = QtWidgets.QTableWidgetItem(str(val))
+                it.setTextAlignment(QtCore.Qt.AlignCenter)
+
+                # 🔴 inf olanlar
+                if cost_value == "inf":
+                    it.setForeground(QtGui.QBrush(QtGui.QColor("#ef4444")))
+
+                # 🟢 en iyi sonuç
+                elif best_cost is not None and c >= 0:
+                    try:
+                        if float(cost_value) == best_cost:
+                            it.setForeground(QtGui.QBrush(QtGui.QColor("#22c55e")))
+                            it.setFont(QtGui.QFont("", -1, QtGui.QFont.Bold))
+                    except:
+                        pass
+
+                table.setItem(r, c, it)
+
+
+        layout.addWidget(table)
+
+        btns = QtWidgets.QHBoxLayout()
+        btn_clear = QtWidgets.QPushButton("Temizle")
+        btn_close = QtWidgets.QPushButton("Kapat")
+        btns.addStretch(1)
+        btns.addWidget(btn_clear)
+        btns.addWidget(btn_close)
+        layout.addLayout(btns)
+
+        def clear_table():
+            self.compare_data = []
+            table.setRowCount(0)
+
+        btn_clear.clicked.connect(clear_table)
+        btn_close.clicked.connect(dlg.accept)
+
+        dlg.exec_()
 
     def run_routing(self):
         try:
@@ -397,18 +605,54 @@ class Window(QtWidgets.QWidget):
 
         algo_key = self._algo_key()
 
-        # Doğru sıra: (algo_key, G, src, dst, weights)
+        # ✅ DOĞRU SIRA: (algo_key, G, src, dst, weights)
         self.worker = RoutingWorker(algo_key, self.G, src, dst, (w1, w2, w3))
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
 
+    def add_compare_row(self, algo_name, cost, time_ms, steps):
+        if not hasattr(self, "compare_data"):
+            self.compare_data = []
+
+        self.compare_data.append([
+            algo_name,
+            f"{cost:.4f}" if cost != float("inf") else "inf",
+            f"{time_ms:.2f}",
+            steps
+        ])
+
+
+
     def on_finished(self, path, cost, metrics):
+    # Buton ve durum
         self.run_button.setText("HESAPLA VE ÇİZ")
         self.run_button.setEnabled(True)
 
-        self.canvas.draw_graph(self.G, path)
+    # Kaynak / hedef
+        try:
+            src = int(self.src_edit.text())
+            dst = int(self.dst_edit.text())
+        except Exception:
+            src, dst = None, None
 
+    # Grafiği çiz
+        self.canvas.draw_graph(self.G, path=path, src=src, dst=dst)
+
+    # Karşılaştırma tablosu
+        algo_name = self.algo_combo.currentText()
+        time_ms = metrics.get("time_ms", 0) if isinstance(metrics, dict) else 0
+        steps = len(path) if path else 0
+   
+
+        self.add_compare_row(
+        algo_name=algo_name,
+        cost=float(cost) if cost is not None else float("inf"),
+        time_ms=float(time_ms),
+        steps=steps
+    )
+
+    # Sağ panel metrik güncellemeleri
         self.val_delay.setText(f"{metrics.get('delay', 0):.2f} ms" if metrics.get("delay") is not None else "-")
         self.val_rel.setText(f"{metrics.get('rel_cost', 0):.2f}" if metrics.get("rel_cost") is not None else "-")
         self.val_res.setText(f"{metrics.get('res_cost', 0):.2f}" if metrics.get("res_cost") is not None else "-")
@@ -419,14 +663,13 @@ class Window(QtWidgets.QWidget):
         self.lbl_path_nodes.setText(path_str)
         self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(0 sıçrama)")
 
-        algo_name = self.algo_combo.currentText()
         self.algo_pill.setText(algo_name)
 
         self.path_box.setPlainText(
-            f"Algoritma: {algo_name}\n"
-            f"Toplam Maliyet: {metrics.get('total_cost', cost)}\n"
-            f"Yol: {path_str}"
-        )
+        f"Algoritma: {algo_name}\n"
+        f"Toplam Maliyet: {metrics.get('total_cost', cost)}\n"
+        f"Yol: {path_str}"
+    )
 
     def on_error(self, msg):
         self.run_button.setText("HESAPLA VE ÇİZ")
@@ -462,6 +705,7 @@ class Window(QtWidgets.QWidget):
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
+    
     app.setStyle("Fusion")
 
     app.setStyleSheet(f"""
