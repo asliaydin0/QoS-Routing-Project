@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import sys
 import os
+import math  # Matematiksel logaritma işlemleri için eklendi
 
 # ==========================================
 # 1. AĞ YÖNETİCİSİ (VERİ VE GRAF İŞLEMLERİ)
@@ -81,20 +82,21 @@ class NetworkManager:
 class ABC_Manager:
     """
     Yapay Arı Kolonisi (ABC) algoritmasını çalıştırır.
-    GUI ve Test ekibi için optimize edilmiş ve detaylı hata raporlaması eklenmiştir.
+    Hocanın 3. Bölümdeki matematiksel isterlerine göre GÜNCELLENMİŞTİR.
     """
     def __init__(self, graph_manager):
         self.manager = graph_manager
         self.G = graph_manager.get_graph()
         
         # Varsayılan Algoritma Parametreleri
+        # w_delay + w_rel + w_res = 1.0 olmalıdır [cite: 69]
         self.params = {
             'pop_size': 20,      # Popülasyon (Besin Kaynağı) Sayısı
             'max_iter': 50,      # Maksimum İterasyon
             'limit': 5,          # Gelişmeme Limiti (Limit değeri)
-            'w_delay': 0.4,      # Gecikme Ağırlığı
-            'w_rel': 0.4,        # Güvenilirlik Ağırlığı
-            'w_hop': 0.2         # Hop (Sıçrama) Ağırlığı
+            'w_delay': 0.33,     # Gecikme Ağırlığı
+            'w_rel': 0.33,       # Güvenilirlik Ağırlığı
+            'w_res': 0.34        # Kaynak (Bant Genişliği) Ağırlığı (YENİ EKLENDİ)
         }
 
     def set_params(self, **kwargs):
@@ -105,40 +107,68 @@ class ABC_Manager:
 
     def calculate_fitness(self, path):
         """
-        QoS Fitness Fonksiyonu (Minimizasyon)
+        QoS Fitness Fonksiyonu (REVİZE EDİLDİ)
         Düşük Puan = Daha İyi Rota
+        Formüller dokümanın 3.1, 3.2 ve 3.3 maddelerine göre düzenlenmiştir.
         """
         if not path:
-            return float('inf'), 0, 0
+            return float('inf'), 0, 0, 0
 
         total_delay = 0
-        total_reliability = 1.0
+        reliability_cost = 0.0 # Toplamsal maliyet (Logaritmik) [cite: 52]
+        resource_cost = 0.0    # Kaynak maliyeti (1000/BW) [cite: 57]
         
-        # Link maliyetleri
+        real_reliability_product = 1.0 # Ekrana yazdırmak için gerçek çarpım
+        
+        # Link maliyetleri hesaplama
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
             try:
                 data = self.G[u][v]
+                
+                # 1. GECİKME: Link Gecikmesi [cite: 42]
                 total_delay += data['delay']
-                total_reliability *= data['reliability']
+                
+                # 2. GÜVENİLİRLİK: -log(Link_Rel) [cite: 52]
+                r_val = data['reliability']
+                # Log(0) hatası veya negatif değer önlemi
+                if r_val <= 0: r_val = 1e-9
+                elif r_val > 1: r_val = 1.0
+                
+                reliability_cost += -math.log(r_val)
+                real_reliability_product *= r_val
+                
+                # 3. KAYNAK KULLANIMI: 1000 / Bant Genişliği [cite: 57]
+                bw = data['capacity']
+                if bw <= 0: bw = 0.001 # Sıfıra bölme hatası önlemi
+                resource_cost += (1000.0 / bw)
+
             except KeyError:
-                return float('inf'), 0, 0 
+                return float('inf'), 0, 0, 0
             
-        # Node maliyetleri
+        # Node maliyetleri hesaplama
         for node in path:
             data = self.G.nodes[node]
+            # 1. GECİKME: Node İşlem Süresi [cite: 42]
+            # (Dokümanda S ve D hariç diyor ama genelde toplam gecikmeye katılır, 
+            # hocanın formülünde kaynak ve hedef hariç diyorsa buraya if node != path[0] and node != path[-1] eklenebilir)
             total_delay += data['processing_delay']
-            total_reliability *= data['reliability']
+            
+            # 2. GÜVENİLİRLİK: -log(Node_Rel) [cite: 52]
+            r_node = data['reliability']
+            if r_node <= 0: r_node = 1e-9
+            elif r_node > 1: r_node = 1.0
+            
+            reliability_cost += -math.log(r_node)
+            real_reliability_product *= r_node
 
-        # Güvenilirlik Maliyeti: (1 - Reliability) * 1000
-        reliability_cost = (1.0 - total_reliability) * 1000
-        
-        # Weighted Sum
+        # AĞIRLIKLI TOPLAM (Weighted Sum Method) [cite: 66]
+        # TotalCost(P) = W_delay * Delay + W_rel * RelCost + W_res * ResCost
         score = (self.params['w_delay'] * total_delay) + \
                 (self.params['w_rel'] * reliability_cost) + \
-                (self.params['w_hop'] * len(path) * 10)
+                (self.params['w_res'] * resource_cost)
         
-        return score, total_delay, total_reliability
+        return score, total_delay, real_reliability_product, resource_cost
 
     def _random_path_weighted(self, src, dst, demand):
         """
@@ -149,6 +179,7 @@ class ABC_Manager:
         
         temp_G = nx.DiGraph()
         for u, v, d in valid_edges:
+            # Rastgelelik katmak için kenar ağırlıklarını randomize ediyoruz
             temp_G.add_edge(u, v, weight=random.randint(1, 100))
             
         try:
@@ -177,9 +208,8 @@ class ABC_Manager:
     def run_algorithm_generator(self, src, dst, demand):
         """
         GUI İÇİN GENERATOR FONKSİYONU (Yield)
-        Detaylı hata kontrolleri içerir.
         """
-        # --- 0. Ön Kontroller (Detaylı Hata Mesajları İçin) ---
+        # --- 0. Ön Kontroller ---
         if not self.manager.check_node_exists(src):
             yield {'status': 'failed', 'message': f"Kaynak Düğüm (ID: {src}) veri setinde bulunamadı!"}
             return
@@ -187,7 +217,7 @@ class ABC_Manager:
             yield {'status': 'failed', 'message': f"Hedef Düğüm (ID: {dst}) veri setinde bulunamadı!"}
             return
         if not self.manager.check_connectivity(src, dst):
-             yield {'status': 'failed', 'message': f"Graf üzerinde {src} -> {dst} arasında fiziksel bir bağlantı yok (Kapasiteden bağımsız)."}
+             yield {'status': 'failed', 'message': f"Graf üzerinde {src} -> {dst} arasında fiziksel bir bağlantı yok."}
              return
 
         # --- 1. Başlangıç (Initialization) ---
@@ -195,11 +225,10 @@ class ABC_Manager:
         for _ in range(self.params['pop_size']):
             p = self._random_path_weighted(src, dst, demand)
             if p:
-                fit, d, r = self.calculate_fitness(p)
-                population.append({'path': p, 'fit': fit, 'd': d, 'r': r, 'trial': 0})
+                fit, d, r, res = self.calculate_fitness(p)
+                population.append({'path': p, 'fit': fit, 'd': d, 'r': r, 'res': res, 'trial': 0})
 
         if not population:
-            # Buraya düştüyse fiziksel yol var ama kapasite yetmiyor demektir.
             yield {'status': 'failed', 'message': f"Kapasite Yetersiz! {src}->{dst} arasında {demand} Mbps taşıyabilecek uygun bir rota bulunamadı."}
             return
 
@@ -212,9 +241,9 @@ class ABC_Manager:
             # A) İşçi Arılar
             for i in range(len(population)):
                 new_path = self._mutate(population[i]['path'], src, dst, demand)
-                fit, d, r = self.calculate_fitness(new_path)
+                fit, d, r, res = self.calculate_fitness(new_path)
                 if fit < population[i]['fit']:
-                    population[i] = {'path': new_path, 'fit': fit, 'd': d, 'r': r, 'trial': 0}
+                    population[i] = {'path': new_path, 'fit': fit, 'd': d, 'r': r, 'res': res, 'trial': 0}
                 else:
                     population[i]['trial'] += 1
 
@@ -226,9 +255,9 @@ class ABC_Manager:
             for _ in range(self.params['pop_size']):
                 idx = np.random.choice(range(len(population)), p=probs)
                 new_path = self._mutate(population[idx]['path'], src, dst, demand)
-                fit, d, r = self.calculate_fitness(new_path)
+                fit, d, r, res = self.calculate_fitness(new_path)
                 if fit < population[idx]['fit']:
-                    population[idx] = {'path': new_path, 'fit': fit, 'd': d, 'r': r, 'trial': 0}
+                    population[idx] = {'path': new_path, 'fit': fit, 'd': d, 'r': r, 'res': res, 'trial': 0}
                 else:
                     population[idx]['trial'] += 1
 
@@ -237,8 +266,8 @@ class ABC_Manager:
                 if population[i]['trial'] > self.params['limit']:
                     p = self._random_path_weighted(src, dst, demand)
                     if p:
-                        fit, d, r = self.calculate_fitness(p)
-                        population[i] = {'path': p, 'fit': fit, 'd': d, 'r': r, 'trial': 0}
+                        fit, d, r, res = self.calculate_fitness(p)
+                        population[i] = {'path': p, 'fit': fit, 'd': d, 'r': r, 'res': res, 'trial': 0}
 
             # En iyiyi güncelle
             current_best = min(population, key=lambda x: x['fit'])
@@ -262,6 +291,7 @@ class ABC_Manager:
                 'path': best_sol['path'],
                 'total_delay': round(best_sol['d'], 2),
                 'total_reliability': round(best_sol['r'], 4),
+                'resource_cost': round(best_sol['res'], 2),
                 'fitness': round(best_sol['fit'], 2),
                 'hop_count': len(best_sol['path']) - 1,
                 'convergence_history': history
@@ -269,7 +299,7 @@ class ABC_Manager:
         }
 
 # ==========================================
-# 3. PATH AYARLARI VE MAIN (KRİTİK KISIM)
+# 3. PATH AYARLARI VE MAIN
 # ==========================================
 if __name__ == "__main__":
     
@@ -283,10 +313,14 @@ if __name__ == "__main__":
     
     # Hızlı Kontrol: Data klasörü var mı?
     if not os.path.exists(node_path):
-        print("\n[HATA] Veri dosyaları bulunamıyor!")
-        print(f"Beklenen Konum: {data_dir}")
-        print("Lütfen projenin 'algorithms' ve 'data' klasörlerini içeren ana klasörde olduğundan emin ol.")
-        sys.exit(1)
+        # Eğer bir üst klasörde değilse, belki aynı klasördedir diye kontrol edelim (Test için)
+        if os.path.exists("BSM307_317_Guz2025_TermProject_NodeData(in).csv"):
+            node_path = "BSM307_317_Guz2025_TermProject_NodeData(in).csv"
+            edge_path = "BSM307_317_Guz2025_TermProject_EdgeData(in).csv"
+        else:
+            print("\n[HATA] Veri dosyaları bulunamıyor!")
+            print(f"Beklenen Konum: {data_dir}")
+            sys.exit(1)
         
     # --- ARGÜMAN PARSER ---
     parser = argparse.ArgumentParser(description="ABC QoS Rotalama Algoritması")
@@ -300,9 +334,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("\n" + "="*60)
-    print(f"📂 Veri Yolu     : {data_dir}")
+    print(f"📂 Veri Yolu     : {args.node_file}")
     print(f"⚙️  Parametreler  : Kaynak={args.src}, Hedef={args.dst}, Talep={args.demand} Mbps")
-    print("🐝 YAPAY ARI KOLONİSİ (ABC) BAŞLATILIYOR...")
+    print("🐝 YAPAY ARI KOLONİSİ (ABC) BAŞLATILIYOR... [Resource Cost Aktif]")
     print("="*60)
 
     net_manager = NetworkManager(args.node_file, args.edge_file)
@@ -318,7 +352,6 @@ if __name__ == "__main__":
     print("\n[İşlem Durumu]")
     for update in generator:
         if update['status'] == 'running':
-            # Her 10 adımda bir veya ilk adımda bilgi ver
             if update['iteration'] % 10 == 0 or update['iteration'] == 1:
                 print(f" >> Iter: {update['iteration']}/{update['max_iter']} | En İyi Fitness: {update['current_best_fitness']:.2f}")
         
@@ -341,6 +374,7 @@ if __name__ == "__main__":
         print(f"📍 Rota              : {final_result['path']}")
         print(f"⏱️  Toplam Gecikme    : {final_result['total_delay']} ms")
         print(f"🛡️  Toplam Güvenilirlik: %{final_result['total_reliability']*100:.4f}")
-        print(f"🏆 Fitness Skoru     : {final_result['fitness']}")
+        print(f"💾 Kaynak Maliyeti   : {final_result['resource_cost']:.2f} (Düşük=Daha Geniş Bant)")
+        print(f"🏆 Fitness Skoru     : {final_result['fitness']:.4f}")
         print(f"⏳ Hesaplama Süresi  : {total_time:.4f} saniye")
         print("="*60)
