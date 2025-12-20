@@ -776,6 +776,10 @@ class Window(QtWidgets.QWidget):
         self.worker.start()
 
     def on_batch_done(self, results):
+        # BUTONU SIFIRLA VE AKTİF ET
+        self.btn_compare.setText("TÜMÜNÜ KIYASLA")
+        self.btn_compare.setEnabled(True)
+
         best_algo = None
         best_cost = float("inf")
 
