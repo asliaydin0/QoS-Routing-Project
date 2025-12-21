@@ -152,7 +152,7 @@ class RoutingWorker(QThread):
             self.error.emit(str(e))
 
 # ==========================================================
-#  GRAFİK 1: AĞ TOPOLOJİSİ
+#  GRAFİK 1: AĞ TOPOLOJİSİ (ZOOM + PAN)
 # ==========================================================
 class GraphCanvas(FigureCanvas):
     
@@ -164,19 +164,134 @@ class GraphCanvas(FigureCanvas):
 
         self.fig.patch.set_facecolor(THEME["GRAPH_BG"])
         self.ax.set_facecolor(THEME["GRAPH_BG"])
+        self.G = None  # Başlangıçta boş
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.updateGeometry()
         self.pos = {}
 
-    def draw_graph(self, G, path=None, src=None, dst=None):
+        # --- EVENT BAĞLANTILARI ---
+        self.mpl_connect("scroll_event", self.on_scroll)          # Zoom
+        self.mpl_connect("button_press_event", self.on_press)     # Pan Başlangıç
+        self.mpl_connect("button_release_event", self.on_release) # Pan Bitiş
+        self.mpl_connect("motion_notify_event", self.on_mouse_move) # Pan Hareket + Tooltip
 
+        # Pan değişkenleri
+        self.panning = False
+        self.pan_start_x = 0
+        self.pan_start_y = 0
+
+    def on_press(self, event):
+        """Fare tuşuna basıldığında (Sol tık = Pan Başlat)"""
+        if event.button == 1 and event.inaxes == self.ax:
+            self.panning = True
+            self.pan_start_x = event.xdata
+            self.pan_start_y = event.ydata
+            self.setCursor(QtCore.Qt.ClosedHandCursor) # İmleci değiştir
+
+    def on_release(self, event):
+        """Fare tuşu bırakıldığında"""
+        self.panning = False
+        self.setCursor(QtCore.Qt.ArrowCursor) # İmleci normale döndür
+
+    def on_mouse_move(self, event):
+        """Fare hareket ettiğinde: Ya Pan yap ya da Tooltip göster"""
+        if event.inaxes != self.ax: 
+            return
+
+        # 1. DURUM: SÜRÜKLEME (PAN) YAPILIYOR
+        if self.panning and event.xdata is not None:
+            dx = event.xdata - self.pan_start_x
+            dy = event.ydata - self.pan_start_y
+            
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            
+            self.ax.set_xlim(xlim[0] - dx, xlim[1] - dx)
+            self.ax.set_ylim(ylim[0] - dy, ylim[1] - dy)
+            
+            self.draw()
+            return # Sürüklerken tooltip gösterme
+
+        # 2. DURUM: TOOLTIP (MOUSE OVER)
+        if not event.xdata: return
+        closest, min_d = None, float('inf')
+        
+        # Eğer self.pos boşsa tooltip hesaplama
+        if not self.pos: return
+
+        for n, (x, y) in self.pos.items():
+            d = math.hypot(event.xdata - x, event.ydata - y)
+            if d < 0.05 and d < min_d: min_d, closest = d, n
+        
+        # self.G var mı kontrol et 
+        if closest is not None and self.G is not None:
+            if closest in self.G.nodes:
+                p = self.G.nodes[closest]
+                txt = f"<b>DÜĞÜM {closest}</b><hr>İşlem: {p.get('processing_delay')}ms<br>Güven: {p.get('reliability')}"
+                QtWidgets.QToolTip.showText(QCursor.pos(), txt)
+        else:
+            QtWidgets.QToolTip.hideText()
+
+    def on_scroll(self, event):
+        """Fare tekerleği ile zoom yapma (İmleç konumuna göre)"""
+        if event.inaxes != self.ax: return
+        
+        base_scale = 1.2
+        if event.button == 'up':
+            scale_factor = 1 / base_scale
+        elif event.button == 'down':
+            scale_factor = base_scale
+        else:
+            scale_factor = 1
+
+        self.zoom_view(scale_factor, anchor_x=event.xdata, anchor_y=event.ydata)
+
+    def zoom_view(self, scale_factor, anchor_x=None, anchor_y=None):
+        cur_xlim = self.ax.get_xlim()
+        cur_ylim = self.ax.get_ylim()
+
+        x_range = cur_xlim[1] - cur_xlim[0]
+        y_range = cur_ylim[1] - cur_ylim[0]
+
+        new_x_range = x_range * scale_factor
+        new_y_range = y_range * scale_factor
+
+        if anchor_x is not None and anchor_y is not None:
+            # İmlece göre
+            x_ratio = (anchor_x - cur_xlim[0]) / x_range
+            y_ratio = (anchor_y - cur_ylim[0]) / y_range
+
+            new_x_min = anchor_x - (new_x_range * x_ratio)
+            new_y_min = anchor_y - (new_y_range * y_ratio)
+        else:
+            # Merkeze göre
+            center_x = cur_xlim[0] + x_range / 2
+            center_y = cur_ylim[0] + y_range / 2
+            
+            new_x_min = center_x - new_x_range / 2
+            new_y_min = center_y - new_y_range / 2
+
+        self.ax.set_xlim([new_x_min, new_x_min + new_x_range])
+        self.ax.set_ylim([new_y_min, new_y_min + new_y_range])
+
+        self.draw()
+
+    def reset_view(self):
+        self.ax.autoscale()
+        self.draw()
+
+    def draw_graph(self, G, path=None, src=None, dst=None):
+        # BURADA G NESNESİNİ KAYDEDİYORUZ
+        self.G = G  
+        
         self.ax.clear()
         self.ax.set_facecolor(THEME["GRAPH_BG"])
 
         # Layout
         try:
-            self.pos = nx.spring_layout(G, seed=42, iterations=30)
+            if not self.pos or set(self.pos.keys()) != set(G.nodes()):
+                self.pos = nx.spring_layout(G, seed=42, iterations=30)
         except Exception:
             self.pos = nx.random_layout(G, seed=42)
 
@@ -256,7 +371,7 @@ class GraphCanvas(FigureCanvas):
                 ax=self.ax
                             )
             
-        # 🔁 Kaynak & hedefi EN SON tekrar çiz (üstte kalsın)
+        # 🔁 Kaynak & hedefi EN SON tekrar çiz
         if src is not None:
             nx.draw_networkx_nodes(
                 G, self.pos,
@@ -303,7 +418,7 @@ class GraphCanvas(FigureCanvas):
         self.draw()
 
 # ==========================================================
-#  GRAFİK 2: PERFORMANS KIYASLAMA (2x2 GRID - MODERN)
+#  GRAFİK 2: PERFORMANS KIYASLAMA
 # ==========================================================
 class ComparisonCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -311,26 +426,18 @@ class ComparisonCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
         
-        # Tamamen Koyu Arka Plan
         self.fig.patch.set_facecolor(THEME["GRAPH_BG"])
-        
-        # Grafik Aralıkları
         self.fig.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1, hspace=0.4, wspace=0.3)
 
     def update_charts(self, results):
         algos = ["GA", "RL", "ABC", "SA"]
-        
-        # --- REFERANS GÖRSELDEKİ SABİT RENKLER ---
-        # GA=Mavi, RL=Mor, ABC=Yeşil, SA=Pembe
         bar_colors = ["#22d3ee", "#818cf8", "#34d399", "#f472b6"]
 
-        # Verileri hazırla
         costs = [results.get(a, {}).get('total_cost', 0) for a in algos]
         times = [results.get(a, {}).get('time_ms', 0) for a in algos]
         delays = [results.get(a, {}).get('delay', 0) for a in algos]
         rels = [results.get(a, {}).get('rel_cost', 0) for a in algos]
 
-        # 4 Grafiği Çiz (Referans görsele göre)
         self._plot_bar(self.axs[0, 0], algos, costs, bar_colors, "Amaç Fonksiyonu (Maliyet)", "Düşük İyi")
         self._plot_bar(self.axs[0, 1], algos, times, bar_colors, "Hesaplama Süresi (ms)", "ms")
         self._plot_bar(self.axs[1, 0], algos, delays, bar_colors, "Toplam Gecikme", "ms")
@@ -340,24 +447,14 @@ class ComparisonCanvas(FigureCanvas):
 
     def _plot_bar(self, ax, x, y, c, title, ylabel):
         ax.clear()
-        # Zemin Rengi
         ax.set_facecolor(THEME["GRAPH_BG"])
-        
-        # Çubuklar
         ax.bar(x, y, color=c, width=0.6, zorder=3)
-        
-        # Başlık ve Etiketler (Beyaz)
         ax.set_title(title, color='white', fontsize=10, fontweight='bold', pad=10)
         ax.set_ylabel(ylabel, color='#9ca3af', fontsize=8)
-        
-        # Eksen Yazıları
         ax.tick_params(axis='x', colors='white', labelsize=9)
         ax.tick_params(axis='y', colors='#9ca3af', labelsize=8)
-        
-        # Izgara (Grid) - Kesik Çizgi
         ax.grid(axis='y', linestyle='--', alpha=0.3, color='white', zorder=0)
         
-        # Çerçeve (Spines) - Sadece Sol ve Alt kalsın (Gri)
         for spine in ax.spines.values():
             spine.set_edgecolor('#374151')
         ax.spines['top'].set_visible(False)
@@ -369,7 +466,7 @@ class ComparisonCanvas(FigureCanvas):
 class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü - BSM307 (Final)")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü")
         self.resize(1450, 850)
         
         self.df_demand = None
@@ -384,7 +481,7 @@ class Window(QtWidgets.QWidget):
 
     def generate_initial_graph(self):
         self.N = 250
-        self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)  # 0.04 -> 0.4
+        self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
 
         for u, v in self.G.edges():
             self.G[u][v]['bandwidth'] = random.randint(100, 1000)
@@ -394,7 +491,6 @@ class Window(QtWidgets.QWidget):
         for n in self.G.nodes():
             self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
             self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
-
 
     def on_scenario_changed(self, idx):
         data = self.scenario_combo.itemData(idx)
@@ -490,10 +586,48 @@ class Window(QtWidgets.QWidget):
             QTabBar::tab:selected { background: #7b2cff; color: white; }
         """)
         
-        self.canvas_net = GraphCanvas(self)
-        self.canvas_net.mpl_connect("motion_notify_event", self.on_mouse_move)
-        self.tabs.addTab(self.canvas_net, "📍 AĞ TOPOLOJİSİ")
+        # --- TAB 1: Ağ Topolojisi + Zoom Kontrolleri ---
+        tab1_widget = QtWidgets.QWidget()
+        tab1_layout = QtWidgets.QVBoxLayout(tab1_widget)
+        tab1_layout.setContentsMargins(0, 5, 0, 0)
 
+        # Zoom Araç Çubuğu
+        zoom_toolbar = QtWidgets.QHBoxLayout()
+        zoom_toolbar.addStretch() 
+
+        # BUTONLARI VE FONTU BÜYÜTTÜK
+        btn_zoom_in = QtWidgets.QPushButton("+")
+        btn_zoom_in.setFixedSize(40, 40) # 30->40
+        btn_zoom_in.setToolTip("Yakınlaştır")
+        btn_zoom_in.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 24px; font-weight: bold;")
+
+        btn_zoom_out = QtWidgets.QPushButton("-")
+        btn_zoom_out.setFixedSize(40, 40) # 30->40
+        btn_zoom_out.setToolTip("Uzaklaştır")
+        btn_zoom_out.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 24px; font-weight: bold;")
+        
+        btn_reset = QtWidgets.QPushButton("⟲")
+        btn_reset.setFixedSize(40, 40) # 30->40
+        btn_reset.setToolTip("Görünümü Sıfırla")
+        btn_reset.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 20px; font-weight: bold;")
+
+        zoom_toolbar.addWidget(btn_zoom_in)
+        zoom_toolbar.addWidget(btn_zoom_out)
+        zoom_toolbar.addWidget(btn_reset)
+
+        self.canvas_net = GraphCanvas(self)
+        
+        # Buton olayları
+        btn_zoom_in.clicked.connect(lambda: self.canvas_net.zoom_view(0.8))  
+        btn_zoom_out.clicked.connect(lambda: self.canvas_net.zoom_view(1.25)) 
+        btn_reset.clicked.connect(self.canvas_net.reset_view)
+
+        tab1_layout.addLayout(zoom_toolbar)
+        tab1_layout.addWidget(self.canvas_net)
+
+        self.tabs.addTab(tab1_widget, "📍 AĞ TOPOLOJİSİ")
+
+        # --- TAB 2: Performans ---
         self.canvas_perf = ComparisonCanvas(self)
         self.tabs.addTab(self.canvas_perf, "📊 ALGORİTMA PERFORMANS")
 
@@ -592,7 +726,6 @@ class Window(QtWidgets.QWidget):
 
         self.canvas_net.draw_graph(self.G)
 
-
     # İŞLEVLER
     def run_single(self):
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
@@ -631,7 +764,6 @@ class Window(QtWidgets.QWidget):
             f"Yol: {path_str}"
 )
 
-
     def run_compare(self):
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
         except: return
@@ -644,7 +776,10 @@ class Window(QtWidgets.QWidget):
         self.worker.start()
 
     def on_batch_done(self, results):
-        # En iyi algoritmayı bul
+        # BUTONU SIFIRLA VE AKTİF ET
+        self.btn_compare.setText("TÜMÜNÜ KIYASLA")
+        self.btn_compare.setEnabled(True)
+
         best_algo = None
         best_cost = float("inf")
 
@@ -696,26 +831,10 @@ class Window(QtWidgets.QWidget):
 
         self.path_box.setHtml(html)
 
-        # performans sekmesi
         try:
             self.canvas_perf.update_charts(results)
         except:
             pass
-
-
-
-    def on_mouse_move(self, event):
-        if event.inaxes != self.canvas_net.ax: return
-        if not event.xdata: return
-        closest, min_d = None, float('inf')
-        for n, (x, y) in self.canvas_net.pos.items():
-            d = math.hypot(event.xdata - x, event.ydata - y)
-            if d < 0.05 and d < min_d: min_d, closest = d, n
-        if closest is not None:
-            p = self.G.nodes[closest]
-            txt = f"<b>DÜĞÜM {closest}</b><hr>İşlem: {p.get('processing_delay')}ms<br>Güven: {p.get('reliability')}"
-            QtWidgets.QToolTip.showText(QCursor.pos(), txt)
-        else: QtWidgets.QToolTip.hideText()
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
