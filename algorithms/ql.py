@@ -1,371 +1,205 @@
-import pandas as pd
-import networkx as nx
-import numpy as np
 import random
-import time
-import os
+import math
+import networkx as nx
 
-# =============================================================================
-# 1. AYARLAR VE PARAMETRELER
-# =============================================================================
-DATA_FOLDER = "data"  # Verilerin bulunduğu klasör
-NODE_FILE = "BSM307_317_Guz2025_TermProject_NodeData(in).csv"
-EDGE_FILE = "BSM307_317_Guz2025_TermProject_EdgeData(in).csv"
-DEMAND_FILE = "BSM307_317_Guz2025_TermProject_DemandData(in).csv"
-
-# Q-Learning Hiperparametreleri
-ALPHA = 0.1          # Öğrenme Oranı (Learning Rate)
-GAMMA = 0.9          # Gelecek Ödül Çarpanı (Discount Factor)
-EPSILON = 0.1        # Keşfetme Oranı (Exploration Rate)
-EPISODES = 500       # Her senaryo için eğitim turu sayısı
-REPETITIONS = 5      # Her senaryo için tekrar sayısı (İstatistik için)
-
-# Optimizasyon Ağırlıkları (Toplam = 1.0)
-W_DELAY = 0.33
-W_RELIABILITY = 0.33
-W_RESOURCE = 0.34
-
-# =============================================================================
-# 2. VERİ YÜKLEME VE GRAF OLUŞTURMA
-# =============================================================================
-def load_data():
-    """CSV dosyalarını okur ve NetworkX grafını oluşturur."""
-    print("Veri setleri yükleniyor...")
+class QLearningOptimizer:
+    """
+    QoS Odaklı Rotalama için Q-Learning (Pekiştirmeli Öğrenme) Implementasyonu.
     
-    def clean_float(x):
-        if isinstance(x, str):
-            return float(x.replace(',', '.'))
-        return x
+    Özellikler:
+    - Model: Model-Free, Off-Policy (Q-Learning).
+    - Durum (State): Mevcut düğüm (Node ID).
+    - Aksiyon (Action): Komşu düğüme geçiş.
+    - Politika: Epsilon-Greedy (Keşfet/Sömür dengesi).
+    - Ödül Yapısı: QoS maliyet fonksiyonunun negatifi ve kısıt ihlali cezaları.
+    """
 
-    try:
-        # Kodun çalıştığı dizini baz alarak dosya yolunu bul
-        base_path = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
+    def __init__(self, manager, src, dst, bw_demand):
+        """
+        Q-Learning Optimizer Başlatıcı.
         
-        # Eğer 'datalar' klasörü script'in yanındaysa orayı kullan, yoksa direkt bak
-        data_dir = os.path.join(base_path, DATA_FOLDER)
-        if not os.path.exists(data_dir):
-            data_dir = base_path # Datalar ana dizindeyse
+        Args:
+            manager (NetworkManager): Ağ topolojisi ve maliyet hesaplayıcı.
+            src (int): Kaynak düğüm ID.
+            dst (int): Hedef düğüm ID.
+            bw_demand (float): Talep edilen bant genişliği (Mbps).
+        """
+        self.manager = manager
+        self.src = src
+        self.dst = dst
+        self.bw_demand = bw_demand
 
-        df_node = pd.read_csv(os.path.join(data_dir, NODE_FILE), sep=';')
-        df_edge = pd.read_csv(os.path.join(data_dir, EDGE_FILE), sep=';')
-        df_demand = pd.read_csv(os.path.join(data_dir, DEMAND_FILE), sep=';')
-    except Exception as e:
-        print(f"HATA: Dosya okuma hatası: {e}")
-        return None, None
-
-    # Veri Temizleme
-    df_node['s_ms'] = df_node['s_ms'].apply(clean_float)
-    df_node['r_node'] = df_node['r_node'].apply(clean_float)
-    df_edge['r_link'] = df_edge['r_link'].apply(clean_float)
-    df_edge['capacity_mbps'] = df_edge['capacity_mbps'].apply(clean_float)
-    df_edge['delay_ms'] = df_edge['delay_ms'].apply(clean_float)
-
-    # Graf Oluşturma
-    G = nx.DiGraph()
-    
-    # Düğümler
-    for _, row in df_node.iterrows():
-        G.add_node(int(row['node_id']), 
-                   proc_delay=row['s_ms'], 
-                   reliability=row['r_node'])
-    
-    # Kenarlar
-    for _, row in df_edge.iterrows():
-        # Kapasite 0 ise hata vermemesi için minik bir değer ata
-        bw = row['capacity_mbps'] if row['capacity_mbps'] > 0 else 0.1
-        G.add_edge(int(row['src']), int(row['dst']), 
-                   bandwidth=bw, 
-                   link_delay=row['delay_ms'], 
-                   reliability=row['r_link'])
-    
-    print(f"Graf Başarıyla Oluşturuldu: {G.number_of_nodes()} Node, {G.number_of_edges()} Edge.")
-    return G, df_demand
-
-# =============================================================================
-# 3. Q-LEARNING ALGORİTMA SINIFI
-# =============================================================================
-class QLearningRouter:
-    def __init__(self, G, source, target, demand):
-        self.G = G
-        self.source = source
-        self.target = target
-        self.demand = demand
-        
-        # Parametreler
-        self.alpha = ALPHA
-        self.gamma = GAMMA
-        self.epsilon = EPSILON
-        self.episodes = EPISODES
-        
-        # Q-Tablosu: Q[düğüm][komşu] -> Değer
+        # Q-Table: {state: {action: q_value}}
         self.Q = {}
-        self._initialize_q_table()
 
-    def _initialize_q_table(self):
-        """Ağdaki her düğüm ve komşusu için Q değerlerini 0 yapar."""
-        for node in self.G.nodes():
-            self.Q[node] = {}
-            for neighbor in self.G.neighbors(node):
-                self.Q[node][neighbor] = 0.0
-
-    def calculate_fitness(self, path):
-        """
-        GA ile aynı maliyet fonksiyonu (Karşılaştırma için).
-        """
-        if not path or path[0] != self.source or path[-1] != self.target:
-            return float('inf')
-
-        total_delay = 0
-        total_rel_log = 0 
-        resource_cost = 0
-
-        # Düğüm Maliyetleri
-        if len(path) > 2:
-            for node in path[1:-1]:
-                if node not in self.G: return float('inf')
-                d = self.G.nodes[node]
-                total_delay += d.get('proc_delay', 0)
-                r_node = d.get('reliability', 0.999)
-                total_rel_log += -np.log(r_node if r_node > 0 else 1e-9)
-
-        # Kenar Maliyetleri
-        for i in range(len(path) - 1):
-            u, v = path[i], path[i+1]
-            if not self.G.has_edge(u, v): return float('inf')
-            
-            edge = self.G[u][v]
-            total_delay += edge.get('link_delay', 0)
-            
-            r_link = edge.get('reliability', 0.999)
-            total_rel_log += -np.log(r_link if r_link > 0 else 1e-9)
-            
-            bw = edge.get('bandwidth', 100)
-            resource_cost += (1000.0 / bw)
-
-        total_cost = (W_DELAY * total_delay) + \
-                     (W_RELIABILITY * total_rel_log) + \
-                     (W_RESOURCE * resource_cost)
+        # Hiper-parametreler
+        self.alpha = 0.1          # Öğrenme oranı (Learning Rate)
+        self.gamma = 0.9          # İndirim faktörü (Discount Factor)
+        self.epsilon = 1.0        # Başlangıç keşfetme oranı
+        self.epsilon_decay = 0.99 # Her epizot sonrası azalma oranı
+        self.epsilon_min = 0.05   # Minimum keşfetme oranı
         
-        return total_cost
+        self.episodes = 800       # Toplam epizot sayısı
+        self.max_hops = 20        # Maksimum adım (sonsuz döngü koruması)
 
-    def get_step_reward(self, u, v):
-        """
-        Bir adımdaki maliyetin negatifi ödüldür.
-        Reward = - (Cost(u,v))
-        """
-        edge = self.G[u][v]
-        node_v = self.G.nodes[v]
+        # Ceza ve Ödül Sabitleri
+        self.PENALTY_CYCLE = -1000.0
+        self.PENALTY_BW = -500.0
+        self.PENALTY_DEAD_END = -200.0
+        self.REWARD_STEP = -1.0
         
-        # 1. Gecikme
-        delay = edge.get('link_delay', 0) + node_v.get('proc_delay', 0)
-        
-        # 2. Güvenilirlik (Logaritmik Ceza)
-        r_link = edge.get('reliability', 0.999)
-        r_node = node_v.get('reliability', 0.999)
-        rel_cost = -np.log(r_link if r_link > 0 else 1e-9) + \
-                   -np.log(r_node if r_node > 0 else 1e-9)
-        
-        # 3. Kaynak
-        bw = edge.get('bandwidth', 100)
-        res_cost = (1000.0 / bw)
-        
-        step_cost = (W_DELAY * delay) + \
-                    (W_RELIABILITY * rel_cost) + \
-                    (W_RESOURCE * res_cost)
-        
-        # Hedefe ulaşmak büyük ödül, normal adım küçük ceza (maliyet)
-        if v == self.target:
-            return 1000.0 - step_cost
-        else:
-            return -step_cost
+        # En iyi yolu saklamak için
+        self.best_path = []
+        self.best_cost = float('inf')
+        self.best_metrics = {}
 
-    def choose_action(self, current_node):
-        """Epsilon-Greedy ile sonraki düğümü seç."""
-        neighbors = list(self.G.neighbors(current_node))
-        if not neighbors:
+    def _get_q(self, state, action):
+        """Q tablosundan değer okur, yoksa 0.0 döndürür."""
+        if state not in self.Q:
+            self.Q[state] = {}
+        return self.Q[state].get(action, 0.0)
+
+    def _set_q(self, state, action, value):
+        """Q tablosunu günceller."""
+        if state not in self.Q:
+            self.Q[state] = {}
+        self.Q[state][action] = value
+
+    def _get_max_q(self, state):
+        """Bir durumdaki en yüksek Q değerini döndürür."""
+        if state not in self.Q or not self.Q[state]:
+            return 0.0
+        return max(self.Q[state].values())
+
+    def _choose_action(self, state, valid_neighbors):
+        """Epsilon-Greedy politikasına göre aksiyon seçer."""
+        if not valid_neighbors:
             return None
-        
-        # Keşfetme (Exploration)
+
+        # Keşfet (Explore)
         if random.random() < self.epsilon:
-            return random.choice(neighbors)
+            return random.choice(valid_neighbors)
         
-        # Sömürme (Exploitation) - En iyi Q değerine git
-        # Eğer Q değerleri eşitse rastgele seç (argmax'ın rastgele versiyonu)
-        q_values = [self.Q[current_node][n] for n in neighbors]
+        # Sömür (Exploit)
+        # Mevcut komşular içinden en yüksek Q değerine sahip olanı seç
+        q_values = [self._get_q(state, n) for n in valid_neighbors]
         max_q = max(q_values)
         
-        # En iyi olanların hepsini bul (eşitlik durumunda)
-        best_candidates = [n for n, q in zip(neighbors, q_values) if q == max_q]
-        return random.choice(best_candidates)
+        # Eşitlik durumunda rastgele seçim (tie-breaking)
+        candidates = [n for n, q in zip(valid_neighbors, q_values) if q == max_q]
+        return random.choice(candidates) if candidates else random.choice(valid_neighbors)
 
-    def train(self):
-        """Ajanı eğitir."""
+    def solve(self, weights):
+        """
+        Q-Learning eğitim döngüsü.
+        
+        Args:
+            weights (tuple): (w_delay, w_reliability, w_resource)
+            
+        Returns:
+            best_path, best_cost, metrics
+        """
+        # Eğitim Döngüsü
         for episode in range(self.episodes):
-            curr = self.source
-            steps = 0
+            curr_state = self.src
+            path = [curr_state]
+            visited = {curr_state}
             
-            while curr != self.target and steps < 250:
-                nxt = self.choose_action(curr)
-                if nxt is None: break # Çıkmaz sokak
+            for _ in range(self.max_hops):
+                # 1. Aksiyon Seçimi
+                # Graf üzerindeki komşuları al
+                neighbors = list(self.manager.G.neighbors(curr_state))
                 
-                # Ödülü al
-                reward = self.get_step_reward(curr, nxt)
+                # Çıkmaz sokak kontrolü
+                if not neighbors:
+                    # Q güncelle (Dead End Cezası)
+                    # Geriye dönük güncelleme yapılamadığı için sadece o anki durumu cezalandırıyoruz
+                    # Bir önceki adımı bilmediğimizden burada Q güncellemesi yapmıyoruz, loop kırılıyor.
+                    break 
+
+                next_node = self._choose_action(curr_state, neighbors)
                 
-                # Bellman Denklemi
-                old_q = self.Q[curr][nxt]
+                # 2. Kısıt Kontrolleri ve Ödül Hesaplama
+                reward = 0
+                done = False
+                valid_step = True
                 
-                # Gelecekteki max Q
-                next_neighbors = list(self.G.neighbors(nxt))
-                if next_neighbors:
-                    future_q = max([self.Q[nxt][n] for n in next_neighbors])
+                # A. Döngü Kontrolü
+                if next_node in visited:
+                    reward = self.PENALTY_CYCLE
+                    done = True # Epizot biter
+                    valid_step = False
+                
+                # B. Bant Genişliği Kontrolü
+                elif self.manager.G[curr_state][next_node].get('bandwidth', 0) < self.bw_demand:
+                    reward = self.PENALTY_BW
+                    done = True # Epizot biter (veya çok büyük ceza ile devam etmeyiz)
+                    valid_step = False
+                
+                # C. Hedefe Ulaşma
+                elif next_node == self.dst:
+                    path.append(next_node)
+                    
+                    # Gerçek QoS Maliyetini Hesapla
+                    total_cost, metrics = self.manager.calculate_path_cost(path, weights, self.bw_demand)
+                    
+                    # En iyi yolu güncelle
+                    if metrics['is_feasible'] and total_cost < self.best_cost:
+                        self.best_cost = total_cost
+                        self.best_path = list(path)
+                        self.best_metrics = metrics
+                    
+                    # Ödül: Maliyet ne kadar düşükse ödül o kadar yüksek (sıfıra yakın) olmalı.
+                    # Q-Learning maksimizasyon yaptığı için maliyetin negatifini ödül olarak veriyoruz.
+                    # Ölçekleme katsayısı (örn. 10) eğitimin stabilitesini artırabilir.
+                    reward = -total_cost * 2.0 
+                    done = True
+                
+                # D. Ara Adım
                 else:
-                    future_q = 0.0
+                    reward = self.REWARD_STEP
+                    path.append(next_node)
+                    visited.add(next_node)
                 
-                # Güncelleme
-                new_q = old_q + self.alpha * (reward + (self.gamma * future_q) - old_q)
-                self.Q[curr][nxt] = new_q
+                # 3. Q-Table Güncelleme (Bellman Denklemi)
+                # Q(s,a) = Q(s,a) + alpha * [R + gamma * max Q(s',a') - Q(s,a)]
+                current_q = self._get_q(curr_state, next_node)
+                max_next_q = self._get_max_q(next_node) if not done else 0.0
                 
-                curr = nxt
-                steps += 1
-
-    def reconstruct_path(self):
-        """Eğitimden sonra Q tablosuna bakarak en iyi yolu çizer (Greedy)."""
-        path = [self.source]
-        curr = self.source
-        visited = {self.source}
-        
-        while curr != self.target:
-            neighbors = list(self.G.neighbors(curr))
-            if not neighbors: return None
-            
-            # Döngüye girmemek için ziyaret edilmemişlerden en iyisini seç
-            valid_neighbors = [n for n in neighbors if n not in visited]
-            if not valid_neighbors: return None
-            
-            # En yüksek Q değerine sahip komşuyu seç
-            nxt = max(valid_neighbors, key=lambda n: self.Q[curr].get(n, -float('inf')))
-            
-            path.append(nxt)
-            visited.add(nxt)
-            curr = nxt
-            
-            if len(path) > 250: return None
-            
-        return path
-
-    def run(self):
-        """Dışarıdan çağrılan ana metod."""
-        self.train()
-        best_path = self.reconstruct_path()
-        
-        if best_path:
-            cost = self.calculate_fitness(best_path)
-            return best_path, cost
-        else:
-            return None, float('inf')
-
-# =============================================================================
-# 4. GITHUB VE TEST UYUMLULUĞU İÇİN WRAPPER FONKSİYON
-# =============================================================================
-def find_ql_path(G, src=None, dst=None, demand=0, seed=None, **kwargs):
-    """
-    Q-Learning için köprü fonksiyonu (GA ile aynı imza).
-    """
-    if src is None: src = kwargs.get('start')
-    if dst is None: dst = kwargs.get('goal')
-    
-    if src is None or dst is None:
-        return None, float('inf'), {}
-
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-
-    ql = QLearningRouter(G, src, dst, demand)
-    path, cost = ql.run()
-    
-    # Metrics şimdilik boş
-    return path, cost, {}
-
-# =============================================================================
-# 5. ANA ÇALIŞTIRMA VE RAPORLAMA BLOĞU
-# =============================================================================
-if __name__ == "__main__":
-    G, df_demand = load_data()
-    
-    if G is not None:
-        experiment_results = []
-        
-        print("\n" + "="*80)
-        print(f"Q-LEARNING DENEYİ BAŞLIYOR: {len(df_demand)} Senaryo x {REPETITIONS} Tekrar")
-        print("="*80 + "\n")
-        
-        total_scenarios = len(df_demand)
-        
-        for idx, row in df_demand.iterrows():
-            src = int(row['src'])
-            dst = int(row['dst'])
-            demand = row['demand_mbps']
-            
-            costs = []
-            times = []
-            best_path_str = "Yok"
-            
-            print(f"[{idx+1}/{total_scenarios}] Senaryo: {src} -> {dst} ({demand} Mbps)...")
-            
-            for rep in range(REPETITIONS):
-                start_time = time.time()
+                new_q = current_q + self.alpha * (reward + (self.gamma * max_next_q) - current_q)
+                self._set_q(curr_state, next_node, new_q)
                 
-                ql = QLearningRouter(G, src, dst, demand)
-                path, cost = ql.run()
+                # Sonraki duruma geç
+                if valid_step:
+                    curr_state = next_node
                 
-                duration = time.time() - start_time
-                
-                if path:
-                    costs.append(cost)
-                    times.append(duration)
-                    if cost == min(costs):
-                        best_path_str = str(path)
+                if done:
+                    break
+            
+            # Epsilon Decay
+            if self.epsilon > self.epsilon_min:
+                self.epsilon *= self.epsilon_decay
+
+        # Eğitim Bitti
+        
+        # Eğer hiç yol bulunamadıysa Shortest Path Fallback (Sistem çökmemesi için)
+        if not self.best_path:
+            try:
+                # Fallback: Sadece BW kısıtını sağlayan en kısa yolu bulmaya çalış
+                valid_edges = [
+                    (u, v) for u, v, d in self.manager.G.edges(data=True)
+                    if d.get('bandwidth', 0) >= self.bw_demand
+                ]
+                temp_G = self.manager.G.edge_subgraph(valid_edges)
+                if nx.has_path(temp_G, self.src, self.dst):
+                    self.best_path = nx.shortest_path(temp_G, self.src, self.dst)
+                    self.best_cost, self.best_metrics = self.manager.calculate_path_cost(
+                        self.best_path, weights, self.bw_demand
+                    )
                 else:
-                    costs.append(float('inf'))
-                    times.append(duration)
+                    # Hiçbir çare yok
+                    return [], 0.0, {}
+            except:
+                return [], 0.0, {}
 
-            valid_costs = [c for c in costs if c != float('inf')]
-            
-            if valid_costs:
-                mean_val = np.mean(valid_costs)
-                std_val = np.std(valid_costs)
-                best_val = np.min(valid_costs)
-                worst_val = np.max(valid_costs)
-                avg_time = np.mean(times)
-                status = "SUCCESS"
-            else:
-                mean_val = std_val = best_val = worst_val = avg_time = 0
-                status = "FAIL"
-
-            experiment_results.append({
-                "Scenario_ID": idx + 1,
-                "Source": src,
-                "Destination": dst,
-                "Demand_Mbps": demand,
-                "Status": status,
-                "Mean_Cost": round(mean_val, 4),
-                "Std_Dev": round(std_val, 4),
-                "Best_Cost": round(best_val, 4),
-                "Worst_Cost": round(worst_val, 4),
-                "Avg_Time_Sec": round(avg_time, 4),
-                "Best_Path_Found": best_path_str
-            })
-            
-            if status == "SUCCESS":
-                print(f"   >>> Tamamlandı. En İyi: {best_val:.4f}, Ort. Süre: {avg_time:.3f}s")
-            else:
-                print(f"   >>> BAŞARISIZ (Yol Bulunamadı)")
-
-        output_file = "Q_Learning_Sonuclar.csv"
-        df_res = pd.DataFrame(experiment_results)
-        df_res.to_csv(output_file, sep=';', index=False)
-        
-        print("\n" + "="*80)
-        print(f"SONUÇLAR KAYDEDİLDİ: {output_file}")
-        print("="*80)
+        return self.best_path, self.best_cost, self.best_metrics
