@@ -1,255 +1,289 @@
-import pandas as pd
-import numpy as np
-import networkx as nx
 import random
+import math
 import copy
-import time
-import argparse
-import sys
+import networkx as nx
 
-# ==========================================
-# 1. VERİ YÖNETİMİ VE GRAF OLUŞTURMA
-# ==========================================
-class NetworkManager:
-    def __init__(self, node_file, edge_file):
-        try:
-            self.node_df = pd.read_csv(node_file, sep=';')
-            self.edge_df = pd.read_csv(edge_file, sep=';')
-        except FileNotFoundError as e:
-            print(f"HATA: Veri dosyaları bulunamadı! ({e})")
-            sys.exit(1)
-            
-        self.G = nx.DiGraph()
-        self._build_graph()
+class ABCOptimizer:
+    """
+    QoS Odaklı Rotalama için Artificial Bee Colony (ABC) Algoritması.
+    
+    Bu sınıf, sürü zekası (swarm intelligence) prensiplerini kullanarak optimum yolu arar.
+    
+    Temel Kavramlar:
+    - Food Source (Besin Kaynağı): Kaynak (S) ve Hedef (D) arasında geçerli bir yol.
+    - Nectar Amount (Nektar Miktarı): Yolun uygunluk değeri (Fitness = 1/Cost).
+    - Employed Bees (İşçi Arılar): Mevcut çözümleri komşuluk araması ile iyileştirir.
+    - Onlooker Bees (Gözcü Arılar): İyi çözümleri olasılıksal seçip iyileştirir.
+    - Scout Bees (Kaşif Arılar): İyileşmeyen (limit aşan) çözümleri terk edip rastgele yeni yol arar.
+    """
 
-    def _clean_float(self, x):
-        """Virgüllü string sayıları (0,95) float'a (0.95) çevirir."""
-        if isinstance(x, str):
-            return float(x.replace(',', '.'))
-        return x
-
-    def _build_graph(self):
-        # Node verilerini temizle ve ekle
-        for col in ['s_ms', 'r_node']:
-            self.node_df[col] = self.node_df[col].apply(self._clean_float)
-        
-        for _, row in self.node_df.iterrows():
-            self.G.add_node(int(row['node_id']), 
-                            processing_delay=row['s_ms'], 
-                            reliability=row['r_node'])
-
-        # Edge verilerini temizle ve ekle
-        for col in ['r_link']:
-            self.edge_df[col] = self.edge_df[col].apply(self._clean_float)
-            
-        for _, row in self.edge_df.iterrows():
-            self.G.add_edge(int(row['src']), int(row['dst']), 
-                            capacity=row['capacity_mbps'], 
-                            delay=row['delay_ms'], 
-                            reliability=row['r_link'],
-                            original_capacity=row['capacity_mbps'])
-
-    def get_graph(self):
-        return self.G
-
-# ==========================================
-# 2. ARI ALGORİTMASI (ABC)
-# ==========================================
-class ABC_Routing:
-    def __init__(self, graph, pop_size=20, max_iter=50, limit=5):
-        self.G = graph
-        self.pop_size = pop_size     
-        self.max_iter = max_iter     
-        self.limit = limit           
-        
-        # Ağırlıklar (QoS Metrikleri)
-        self.w_delay = 0.4
-        self.w_reliability = 0.4
-        self.w_hop = 0.2
-
-    def calculate_fitness(self, path):
+    def __init__(self, manager, src, dst, bw_demand):
         """
-        QoS Hesaplama:
-        - Toplam Gecikme (Link + Node) -> Minimize
-        - Toplam Güvenilirlik (Link * Node) -> Maximize
+        ABC Algoritması Başlatıcı.
+        
+        Args:
+            manager (NetworkManager): Ağ topolojisi ve maliyet hesaplayıcı.
+            src (int): Kaynak düğüm ID.
+            dst (int): Hedef düğüm ID.
+            bw_demand (float): Talep edilen bant genişliği (Mbps).
+        """
+        self.manager = manager
+        self.src = src
+        self.dst = dst
+        self.bw_demand = bw_demand
+
+        # --- ABC Parametreleri ---
+        self.colony_size = 40                 # Toplam arı sayısı
+        self.n_employed = self.colony_size // 2
+        self.n_onlooker = self.colony_size // 2
+        self.max_cycles = 60                  # Maksimum iterasyon
+        self.limit = 15                       # Bir çözümün terk edilme limiti (Trial limit)
+        self.max_hop_limit = 15               # Maksimum sekme (hop) sayısı
+
+        # Food Sources: [{'path': [], 'cost': float, 'metrics': {}, 'trial': 0}]
+        self.population = [] 
+        
+        # Global Best takibi
+        self.global_best_path = []
+        self.global_best_cost = float('inf')
+        self.global_best_metrics = {}
+
+    def _generate_random_path(self, max_retries=10):
+        """
+        Rastgele (Random) geçerli bir yol üretir.
+        DFS tabanlıdır, döngüleri engeller ve BW kısıtını gözetir.
+        """
+        for _ in range(max_retries):
+            path = [self.src]
+            visited = {self.src}
+            curr = self.src
+            
+            while curr != self.dst:
+                neighbors = list(self.manager.G.neighbors(curr))
+                
+                # BW kısıtını sağlayan ve ziyaret edilmemiş komşuları filtrele
+                # (Strict constraint: calculate_path_cost cezalandırır ama burada baştan eliyoruz)
+                valid_neighbors = [
+                    n for n in neighbors 
+                    if n not in visited and 
+                    self.manager.G[curr][n].get('bandwidth', 0) >= self.bw_demand * 0.5 # Gevşek filtre
+                ]
+                
+                # Eğer geçerli komşu yoksa, tüm ziyaret edilmemişlere bak (Scout mekanizması için esneklik)
+                if not valid_neighbors:
+                    valid_neighbors = [n for n in neighbors if n not in visited]
+
+                if not valid_neighbors:
+                    break # Çıkmaz sokak
+                
+                next_node = random.choice(valid_neighbors)
+                path.append(next_node)
+                visited.add(next_node)
+                curr = next_node
+                
+                if len(path) > self.max_hop_limit:
+                    break
+            
+            if curr == self.dst:
+                return path
+        return None
+
+    def _generate_heuristic_population(self, count):
+        """
+        K-Shortest Paths algoritması ile kaliteli başlangıç çözümleri üretir.
+        """
+        paths = []
+        try:
+            # En kısa yolları bul (Topology-aware initialization)
+            generator = nx.shortest_simple_paths(self.manager.G, self.src, self.dst)
+            for _ in range(count * 3): # Fazla üretip seç
+                try:
+                    p = next(generator)
+                    if len(p) <= self.max_hop_limit:
+                        paths.append(p)
+                except StopIteration:
+                    break
+            
+            if len(paths) > count:
+                return random.sample(paths, count)
+            return paths
+        except:
+            return []
+
+    def _evaluate(self, path, weights):
+        """
+        Bir yolun maliyetini hesaplar.
         """
         if not path:
-            return float('inf'), 0, 0, 0
+            return float('inf'), {}
+        return self.manager.calculate_path_cost(path, weights, self.bw_demand)
 
-        total_delay = 0
-        total_reliability = 1.0
+    def _mutate(self, current_path):
+        """
+        Lokal Arama (Neighbor Generation):
+        Mevcut yolun bir parçasını değiştirerek komşu bir çözüm üretir.
+        (Sub-path regeneration)
+        """
+        if len(current_path) < 3:
+            return list(current_path) # Değiştirilemez kadar kısa
+
+        new_path = list(current_path)
         
-        # Link maliyetleri
-        for i in range(len(path) - 1):
-            u, v = path[i], path[i+1]
-            data = self.G[u][v]
-            total_delay += data['delay']
-            total_reliability *= data['reliability']
+        # Yol üzerinde rastgele iki nokta seç (Başlangıç ve Bitiş korunabilir veya değişebilir)
+        # Genelde rotalama problemlerinde bir ara segmenti değiştirmek mantıklıdır.
+        idx_a = random.randint(0, len(new_path) - 2)
+        idx_b = random.randint(idx_a + 1, len(new_path) - 1)
+        
+        node_a = new_path[idx_a]
+        node_b = new_path[idx_b]
+        
+        # node_a'dan node_b'ye alternatif, kısa bir yol bulmaya çalış (DFS/Random Walk)
+        # Orijinal segmenti atla
+        segment_nodes = set(new_path[idx_a+1 : idx_b])
+        
+        temp_path = [node_a]
+        curr = node_a
+        found = False
+        
+        # Küçük bir lokal arama (max 5 adım)
+        for _ in range(6):
+            neighbors = list(self.manager.G.neighbors(curr))
+            # Döngü oluşturmayacak komşular
+            valid_n = [
+                n for n in neighbors 
+                if n not in temp_path and n not in new_path[:idx_a] and n not in new_path[idx_b+1:]
+            ]
             
-        # Node maliyetleri
-        for node in path:
-            data = self.G.nodes[node]
-            total_delay += data['processing_delay']
-            total_reliability *= data['reliability']
-
-        # Güvenilirliği maliyet fonksiyonuna çevir (1 - Rel)
-        reliability_cost = (1.0 - total_reliability) * 1000
-        
-        # Fitness Skoru (Düşük olan daha iyi)
-        score = (self.w_delay * total_delay) + \
-                (self.w_reliability * reliability_cost) + \
-                (self.w_hop * len(path) * 10) 
-        
-        return score, total_delay, total_reliability, len(path)
-
-    def find_random_path(self, src, dst, demand):
-        """Kapasite kontrollü rastgele yol bulucu (Randomized Dijkstra)"""
-        valid_edges = [(u, v, d) for u, v, d in self.G.edges(data=True) if d['capacity'] >= demand]
-        if not valid_edges:
-            return None
-        
-        temp_G = nx.DiGraph()
-        for u, v, d in valid_edges:
-            # Rastgele ağırlık vererek çeşitlilik sağla
-            temp_G.add_edge(u, v, weight=random.randint(1, 100))
+            # Hedef node_b komşulardaysa bağlan
+            if node_b in neighbors:
+                temp_path.append(node_b)
+                found = True
+                break
             
-        try:
-            return nx.shortest_path(temp_G, source=src, target=dst, weight='weight')
-        except nx.NetworkXNoPath:
-            return None
-
-    def mutate_path(self, path, src, dst, demand):
-        """Mevcut yolu mutasyona uğratarak komşu çözüm üretir"""
-        if len(path) <= 2: return path
+            if not valid_n: break
             
-        pivot_idx = random.randint(0, len(path) - 2)
-        pivot_node = path[pivot_idx]
+            curr = random.choice(valid_n)
+            temp_path.append(curr)
         
-        valid_edges = [(u, v, d) for u, v, d in self.G.edges(data=True) if d['capacity'] >= demand]
-        temp_G = nx.DiGraph()
-        for u, v, d in valid_edges:
-            temp_G.add_edge(u, v, weight=random.randint(1, 100))
+        if found:
+            # Yeni yolu birleştir: [Başlangıç...A] + [Yeni Segment] + [B...Bitiş]
+            # temp_path [A, ..., B] içerir.
+            candidate = new_path[:idx_a] + temp_path + new_path[idx_b+1:]
             
-        try:
-            new_tail = nx.shortest_path(temp_G, source=pivot_node, target=dst, weight='weight')
-            new_path = path[:pivot_idx] + new_tail
-            if len(new_path) == len(set(new_path)): # Döngü kontrolü
-                return new_path
-        except:
-            pass
-        return path
+            # Son kontroller (Cycle ve Hop)
+            if len(candidate) == len(set(candidate)) and len(candidate) <= self.max_hop_limit:
+                return candidate
 
-    def solve(self, src, dst, demand):
-        # 1. Başlangıç (Initialization)
-        population = [] 
-        for _ in range(self.pop_size):
-            path = self.find_random_path(src, dst, demand)
-            if path:
-                fit, d, r, h = self.calculate_fitness(path)
-                population.append({'path': path, 'fitness': fit, 'delay': d, 'rel': r, 'trial': 0})
+        return list(current_path) # Değişiklik yapılamadıysa eskisini döndür
+
+    def solve(self, weights):
+        """
+        ABC Algoritması ana döngüsü.
+        """
+        # --- BAŞLANGIÇ POPÜLASYONU ---
+        self.population = []
         
-        if not population:
-            return None 
+        # %50 Heuristic
+        heuristic_paths = self._generate_heuristic_population(self.n_employed // 2)
+        for p in heuristic_paths:
+            cost, metrics = self._evaluate(p, weights)
+            self.population.append({
+                'path': p, 'cost': cost, 'metrics': metrics, 'trial': 0
+            })
             
-        best_sol = min(population, key=lambda x: x['fitness'])
+        # %50 Random
+        attempts = 0
+        while len(self.population) < self.n_employed and attempts < 100:
+            p = self._generate_random_path()
+            if p:
+                cost, metrics = self._evaluate(p, weights)
+                self.population.append({
+                    'path': p, 'cost': cost, 'metrics': metrics, 'trial': 0
+                })
+            attempts += 1
+            
+        # Eğer hiç yol yoksa
+        if not self.population:
+            return [], 0.0, {}
 
-        # 2. Döngü
-        for iter_no in range(self.max_iter):
-            # --- Employed Bees ---
-            for i in range(len(population)):
-                new_path = self.mutate_path(population[i]['path'], src, dst, demand)
-                fit, d, r, h = self.calculate_fitness(new_path)
-                if fit < population[i]['fitness']:
-                    population[i] = {'path': new_path, 'fitness': fit, 'delay': d, 'rel': r, 'trial': 0}
+        # Başlangıçtaki en iyiyi bul
+        self.population.sort(key=lambda x: x['cost'])
+        self.global_best_path = self.population[0]['path']
+        self.global_best_cost = self.population[0]['cost']
+        self.global_best_metrics = self.population[0]['metrics']
+
+        # --- ANA DÖNGÜ (CYCLES) ---
+        for cycle in range(self.max_cycles):
+            
+            # 1. EMPLOYED BEES PHASE (İşçi Arılar)
+            for i in range(len(self.population)):
+                bee = self.population[i]
+                
+                # Yeni çözüm üret (Mutation)
+                new_path = self._mutate(bee['path'])
+                new_cost, new_metrics = self._evaluate(new_path, weights)
+                
+                # Greedy Selection
+                if new_cost < bee['cost']:
+                    bee['path'] = new_path
+                    bee['cost'] = new_cost
+                    bee['metrics'] = new_metrics
+                    bee['trial'] = 0 # İyileşme var, sayacı sıfırla
                 else:
-                    population[i]['trial'] += 1
+                    bee['trial'] += 1 # İyileşme yok, sayacı artır
 
-            # --- Onlooker Bees ---
-            total_fitness_inv = sum(1.0 / (sol['fitness'] + 1e-9) for sol in population)
-            probs = [(1.0 / (sol['fitness'] + 1e-9)) / total_fitness_inv for sol in population]
+            # 2. ONLOOKER BEES PHASE (Gözcü Arılar)
+            # Seçim olasılıklarını hesapla (Fitness tabanlı: Düşük maliyet = Yüksek olasılık)
+            # Fitness = 1 / (Cost + epsilon)
+            total_fitness = sum(1.0 / (b['cost'] + 1e-9) for b in self.population)
+            probs = [(1.0 / (b['cost'] + 1e-9)) / total_fitness for b in self.population]
             
-            for _ in range(self.pop_size):
-                idx = np.random.choice(range(len(population)), p=probs)
-                sol = population[idx]
-                new_path = self.mutate_path(sol['path'], src, dst, demand)
-                fit, d, r, h = self.calculate_fitness(new_path)
-                if fit < sol['fitness']:
-                    population[idx] = {'path': new_path, 'fitness': fit, 'delay': d, 'rel': r, 'trial': 0}
+            # Gözcü arıları dağıt
+            for _ in range(self.n_onlooker):
+                # Rulet tekerleği seçimi (Roulette Wheel Selection)
+                r = random.random()
+                cumulative = 0
+                selected_idx = 0
+                for idx, prob in enumerate(probs):
+                    cumulative += prob
+                    if r <= cumulative:
+                        selected_idx = idx
+                        break
+                
+                # Seçilen kaynak üzerinde çalış
+                target_bee = self.population[selected_idx]
+                new_path = self._mutate(target_bee['path'])
+                new_cost, new_metrics = self._evaluate(new_path, weights)
+                
+                # Greedy Selection (Onlooker için)
+                if new_cost < target_bee['cost']:
+                    target_bee['path'] = new_path
+                    target_bee['cost'] = new_cost
+                    target_bee['metrics'] = new_metrics
+                    target_bee['trial'] = 0
                 else:
-                    population[idx]['trial'] += 1
+                    target_bee['trial'] += 1
 
-            # --- Scout Bees ---
-            for i in range(len(population)):
-                if population[i]['trial'] > self.limit:
-                    new_path = self.find_random_path(src, dst, demand)
-                    if new_path:
-                        fit, d, r, h = self.calculate_fitness(new_path)
-                        population[i] = {'path': new_path, 'fitness': fit, 'delay': d, 'rel': r, 'trial': 0}
+            # 3. SCOUT BEES PHASE (Kaşif Arılar)
+            # Limiti aşan kaynakları bul ve yenile
+            for i in range(len(self.population)):
+                if self.population[i]['trial'] > self.limit:
+                    # Kaynağı terk et, rastgele yeni yol bul
+                    random_path = self._generate_random_path()
+                    if random_path:
+                        cost, metrics = self._evaluate(random_path, weights)
+                        self.population[i] = {
+                            'path': random_path, 'cost': cost, 'metrics': metrics, 'trial': 0
+                        }
+                    else:
+                        # Eğer rastgele yol bulunamazsa sadece trial'ı sıfırla (Soft reset)
+                        self.population[i]['trial'] = 0
 
-            current_best = min(population, key=lambda x: x['fitness'])
-            if current_best['fitness'] < best_sol['fitness']:
-                best_sol = copy.deepcopy(current_best)
+            # 4. MEMORIZE BEST SOLUTION
+            current_cycle_best = min(self.population, key=lambda x: x['cost'])
+            if current_cycle_best['cost'] < self.global_best_cost:
+                self.global_best_cost = current_cycle_best['cost']
+                self.global_best_path = list(current_cycle_best['path'])
+                self.global_best_metrics = current_cycle_best['metrics']
 
-        return best_sol
-
-# ==========================================
-# 3. TERMİNAL PARAMETRE YÖNETİMİ
-# ==========================================
-def main():
-    # Terminalden argümanları okuyan yapı
-    parser = argparse.ArgumentParser(description="ABC Algoritması ile QoS Rotalama Testi")
-    
-    # Parametre tanımları
-    parser.add_argument('--src', type=int, required=True, help="Kaynak Düğüm ID (Örn: 8)")
-    parser.add_argument('--dst', type=int, required=True, help="Hedef Düğüm ID (Örn: 44)")
-    parser.add_argument('--demand', type=float, required=True, help="Talep edilen Bant Genişliği Mbps (Örn: 200)")
-    parser.add_argument('--pop_size', type=int, default=20, help="Arı Sayısı (Varsayılan: 20)")
-    parser.add_argument('--iter', type=int, default=50, help="İterasyon Sayısı (Varsayılan: 50)")
-
-    args = parser.parse_args()
-
-    print("\n" + "="*50)
-    print(f"🚀 ABC ALGORİTMASI BAŞLATILIYOR")
-    print("="*50)
-    print(f"📌 Kaynak (Source): {args.src}")
-    print(f"🎯 Hedef (Dest)   : {args.dst}")
-    print(f"📦 Talep (Demand) : {args.demand} Mbps")
-    print("-" * 50)
-
-    # Grafı Yükle
-    manager = NetworkManager(
-        'BSM307_317_Guz2025_TermProject_NodeData(in).csv', 
-        'BSM307_317_Guz2025_TermProject_EdgeData(in).csv'
-    )
-    
-    # Kaynak ve Hedef kontrolü
-    if args.src not in manager.G.nodes or args.dst not in manager.G.nodes:
-        print("❌ HATA: Girilen düğüm ID'leri verisetinde bulunamadı!")
-        return
-
-    # Algoritmayı Çalıştır
-    abc = ABC_Routing(manager.get_graph(), pop_size=args.pop_size, max_iter=args.iter, limit=5)
-    
-    start_time = time.time()
-    solution = abc.solve(args.src, args.dst, args.demand)
-    end_time = time.time()
-
-    # Sonuçları Yazdır
-    print("\n✅ SONUÇLAR:")
-    if solution:
-        print(f"🔹 Bulunan Rota: {solution['path']}")
-        print(f"⏱️  Toplam Gecikme (Delay): {solution['delay']:.2f} ms")
-        print(f"🛡️  Toplam Güvenilirlik   : %{solution['rel']*100:.4f}")
-        print(f"👟 Hop Sayısı (Adım)     : {len(solution['path'])-1}")
-        print(f"🏆 Fitness Skoru         : {solution['fitness']:.4f}")
-        print(f"⏳ Hesaplama Süresi      : {end_time - start_time:.4f} saniye")
-    else:
-        print("❌ ROTA BULUNAMADI!")
-        print("Muhtemel Sebepler:")
-        print("1. İstenen bant genişliğini (Mbps) karşılayacak bir yol yok.")
-        print("2. Kaynak ve hedef arasında bağlantı kopuk.")
-
-    print("="*50 + "\n")
-
-if __name__ == "__main__":
-    main()
+        return self.global_best_path, self.global_best_cost, self.global_best_metrics
