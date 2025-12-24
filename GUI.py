@@ -2,31 +2,83 @@ import sys
 import time
 import math
 import random
-import itertools
 import os
-from pathlib import Path
 
 import PyQt5
-
-# PyQt5'in yüklü olduğu klasörü buluyoruz
-dirname = os.path.dirname(PyQt5.__file__)
-plugin_path = os.path.join(dirname, 'Qt5', 'plugins')
-
-# Windows'a pluginlerin nerede olduğunu söylüyoruz
-os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
-
-# Pandas Kontrolü
-try:
-    import pandas as pd
-    PANDAS_AVAILABLE = True
-except ImportError:
-    PANDAS_AVAILABLE = False
-
-# PyQt5 Kütüphaneleri
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QCursor
 
+# --- MATPLOTLIB AYARLARI ---
+import matplotlib
+matplotlib.use("Qt5Agg")
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
+import networkx as nx
+from matplotlib.lines import Line2D
+
+# --- PROJE IMPORTLARI ---
+try:
+    from network_manager import NetworkManager
+    # Algoritmalar
+    from algorithms.ga import GeneticOptimizer
+    from algorithms.ql import QLearningOptimizer
+    from algorithms.abc_alg import ABCOptimizer
+    from algorithms.sa import SAOptimizer
+    ALGO_IMPORTED = True
+except ImportError as e:
+    print(f"UYARI: Algoritma veya Manager dosyaları bulunamadı: {e}")
+    ALGO_IMPORTED = False
+
+# PyQt5 Plugin Yolu Ayarı
+dirname = os.path.dirname(PyQt5.__file__)
+plugin_path = os.path.join(dirname, 'Qt5', 'plugins')
+os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
+
+# Yüksek Çözünürlük Ayarı
+if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
+# --- DOSYA YOLLARI ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+NODE_FILE   = os.path.join(DATA_DIR, "BSM307_317_Guz2025_TermProject_NodeData(in).csv")
+EDGE_FILE   = os.path.join(DATA_DIR, "BSM307_317_Guz2025_TermProject_EdgeData(in).csv")
+DEMAND_FILE = os.path.join(DATA_DIR, "BSM307_317_Guz2025_TermProject_DemandData(in).csv")
+
+# --- RENK PALETİ ---
+THEME = {
+    "MAIN_BG": "#111828",       
+    "CARD_BG": "#1e293b",       
+    "GRAPH_BG": "#111828",      
+    "BORDER": "#3c4654",        
+    "TEXT": "#f1f2f6",          
+    "BUTTON": "#7b2cff",        
+    "BUTTON_HOVER": "#6300A5",
+    "BTN_COMPARE": "#10b981",   
+    "NODE_COLOR": "#00d0ff",    
+    "PATH_COLOR": "#ef4444"     
+}
+
+# ==========================================================
+#  YARDIMCI MATEMATİK FONKSİYONU (KENAR SEÇİMİ İÇİN)
+# ==========================================================
+def dist_point_to_segment(px, py, x1, y1, x2, y2):
+    """Bir noktanın (px,py) bir doğru parçasına (x1,y1)-(x2,y2) olan en kısa uzaklığı."""
+    l2 = (x1 - x2)**2 + (y1 - y2)**2
+    if l2 == 0: return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2
+    t = max(0, min(1, t))
+    proj_x = x1 + t * (x2 - x1)
+    proj_y = y1 + t * (y2 - y1)
+    return math.hypot(px - proj_x, py - proj_y)
+
+# ==========================================================
+#  YARDIMCI UI FONKSİYONU
+# ==========================================================
 def create_card(title, color, big=False):
     card = QtWidgets.QFrame()
     card.setObjectName("metricCard")
@@ -48,80 +100,6 @@ def create_card(title, color, big=False):
 
     return card, lbl_val
 
-# Grafik Kütüphaneleri
-import matplotlib
-matplotlib.use("Qt5Agg")
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-import matplotlib.pyplot as plt
-import networkx as nx
-from matplotlib.lines import Line2D
-
-
-# Yüksek Çözünürlük Ayarı
-if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
-    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
-if hasattr(QtCore.Qt, 'AA_UseHighDpiPixmaps'):
-    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
-
-# --- RENK PALETİ ---
-THEME = {
-    "MAIN_BG": "#111828",       
-    "CARD_BG": "#1e293b",       
-    "GRAPH_BG": "#111828",      
-    "BORDER": "#3c4654",        
-    "TEXT": "#f1f2f6",          
-    "BUTTON": "#7b2cff",        
-    "BUTTON_HOVER": "#6300A5",
-    "BTN_COMPARE": "#10b981",   
-    "NODE_COLOR": "#00d0ff",    
-    "PATH_COLOR": "#ef4444"     
-}
-
-# Dosya Yolları
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(BASE_DIR)
-DATA_DIR = os.path.join(PROJECT_DIR, "data")
-DEMAND_FILE = os.path.join(DATA_DIR, "BSM307_317_Guz2025_TermProject_DemandData(in).csv")
-
-# ==========================================================
-#  BACKEND SİMÜLASYONU
-# ==========================================================
-def run_simulation(algo_key, G, src, dst, weights):
-    """Kıyaslama için sahte veri üretir (Gerçek backend yoksa)"""
-    time.sleep(0.05) 
-    try:
-        path = nx.shortest_path(G, src, dst)
-        base_cost = sum(G[u][v].get('delay', 5) for u, v in zip(path[:-1], path[1:]))
-        
-        # Algoritmalar arası karakteristik farklar
-        var = 1.0
-        time_base = 20
-        
-        if algo_key == "GA": 
-            var = 1.0; time_base = 28
-        elif algo_key == "RL": 
-            var = 1.3; time_base = 18 # Hızlı ama maliyetli
-        elif algo_key == "ABC": 
-            var = 0.95; time_base = 40 # Yavaş ama iyi
-        elif algo_key == "SA": 
-            var = 1.1; time_base = 12
-
-        # Biraz rastgelelik ekle
-        final_delay = base_cost * var * random.uniform(0.95, 1.05)
-        final_rel = random.uniform(0.85, 0.99)
-        final_res = random.uniform(10, 30)
-        
-        metrics = {
-            "delay": final_delay,
-            "rel_cost": final_rel,
-            "res_cost": final_res,
-            "total_cost": (final_delay * weights[0]) + (100 * (1-final_rel) * weights[1]) + (final_res * weights[2]),
-            "time_ms": time_base * random.uniform(0.9, 1.1)
-        }
-        return path, metrics["total_cost"], metrics
-    except:
-        return [], 0, {}
-
 # ==========================================================
 #  WORKER THREAD
 # ==========================================================
@@ -130,292 +108,347 @@ class RoutingWorker(QThread):
     finished_batch = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, mode, algo_key, G, src, dst, weights):
+    def __init__(self, mode, algo_key, manager, src, dst, weights, bw_demand=0):
         super().__init__()
         self.mode = mode 
         self.algo_key = algo_key
-        self.G = G; self.src = src; self.dst = dst; self.weights = weights
+        self.manager = manager
+        self.src = src
+        self.dst = dst
+        self.weights = weights
+        self.bw_demand = bw_demand
+
+    def _solve_with_algo(self, name):
+        if not ALGO_IMPORTED:
+            raise Exception("Algoritma dosyaları eksik!")
+
+        start_time = time.time()
+        
+        optimizer = None
+        if name == "GA":
+            optimizer = GeneticOptimizer(self.manager, self.src, self.dst, self.bw_demand)
+        elif name == "RL":
+            optimizer = QLearningOptimizer(self.manager, self.src, self.dst, self.bw_demand)
+        elif name == "ABC":
+            optimizer = ABCOptimizer(self.manager, self.src, self.dst, self.bw_demand)
+        elif name == "SA":
+            optimizer = SAOptimizer(self.manager, self.src, self.dst, self.bw_demand)
+        
+        if optimizer:
+            path, cost, metrics = optimizer.solve(self.weights)
+        else:
+            path, cost, metrics = [], 0, {}
+
+        end_time = time.time()
+        metrics['time_ms'] = (end_time - start_time) * 1000
+        return path, cost, metrics
 
     def run(self):
         try:
             if self.mode == "SINGLE":
-                path, cost, metrics = run_simulation(self.algo_key, self.G, self.src, self.dst, self.weights)
+                path, cost, metrics = self._solve_with_algo(self.algo_key)
                 self.finished_single.emit(path or [], float(cost), metrics or {})
             
             elif self.mode == "COMPARE":
                 results = {}
-                for alg in ["GA", "RL", "ABC", "SA"]:
-                    _, _, metrics = run_simulation(alg, self.G, self.src, self.dst, self.weights)
+                algo_list = ["GA", "RL", "ABC", "SA"] 
+                
+                for alg in algo_list:
+                    _, _, metrics = self._solve_with_algo(alg)
                     results[alg] = metrics
+                
                 self.finished_batch.emit(results)
         except Exception as e:
             self.error.emit(str(e))
 
 # ==========================================================
-#  GRAFİK 1: AĞ TOPOLOJİSİ (ZOOM + PAN)
+#  GRAFİK 1: AĞ TOPOLOJİSİ (GraphCanvas) - KENAR VURGULAMA
 # ==========================================================
 class GraphCanvas(FigureCanvas):
-    
     def __init__(self, parent=None):
-        
         self.fig, self.ax = plt.subplots()
+        self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        
         super().__init__(self.fig)
         self.setParent(parent)
 
         self.fig.patch.set_facecolor(THEME["GRAPH_BG"])
         self.ax.set_facecolor(THEME["GRAPH_BG"])
-        self.G = None  # Başlangıçta boş
+        self.G = None
+        self.pos = {}
+        
+        self.highlight_artists = []
+        self.last_hovered_edge = None # Artık kenarları takip ediyoruz
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.updateGeometry()
-        self.pos = {}
 
-        # --- EVENT BAĞLANTILARI ---
-        self.mpl_connect("scroll_event", self.on_scroll)          # Zoom
-        self.mpl_connect("button_press_event", self.on_press)     # Pan Başlangıç
-        self.mpl_connect("button_release_event", self.on_release) # Pan Bitiş
-        self.mpl_connect("motion_notify_event", self.on_mouse_move) # Pan Hareket + Tooltip
+        self.mpl_connect("scroll_event", self.on_scroll)
+        self.mpl_connect("button_press_event", self.on_press)
+        self.mpl_connect("button_release_event", self.on_release)
+        self.mpl_connect("motion_notify_event", self.on_mouse_move)
 
-        # Pan değişkenleri
         self.panning = False
         self.pan_start_x = 0
         self.pan_start_y = 0
 
     def on_press(self, event):
-        """Fare tuşuna basıldığında (Sol tık = Pan Başlat)"""
         if event.button == 1 and event.inaxes == self.ax:
             self.panning = True
             self.pan_start_x = event.xdata
             self.pan_start_y = event.ydata
-            self.setCursor(QtCore.Qt.ClosedHandCursor) # İmleci değiştir
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
 
     def on_release(self, event):
-        """Fare tuşu bırakıldığında"""
         self.panning = False
-        self.setCursor(QtCore.Qt.ArrowCursor) # İmleci normale döndür
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        self.draw_idle()
 
     def on_mouse_move(self, event):
-        """Fare hareket ettiğinde: Ya Pan yap ya da Tooltip göster"""
-        if event.inaxes != self.ax: 
-            return
-
-        # 1. DURUM: SÜRÜKLEME (PAN) YAPILIYOR
-        if self.panning and event.xdata is not None:
-            dx = event.xdata - self.pan_start_x
-            dy = event.ydata - self.pan_start_y
-            
-            xlim = self.ax.get_xlim()
-            ylim = self.ax.get_ylim()
-            
-            self.ax.set_xlim(xlim[0] - dx, xlim[1] - dx)
-            self.ax.set_ylim(ylim[0] - dy, ylim[1] - dy)
-            
-            self.draw()
-            return # Sürüklerken tooltip gösterme
-
-        # 2. DURUM: TOOLTIP (MOUSE OVER)
-        if not event.xdata: return
-        closest, min_d = None, float('inf')
-        
-        # Eğer self.pos boşsa tooltip hesaplama
-        if not self.pos: return
-
-        for n, (x, y) in self.pos.items():
-            d = math.hypot(event.xdata - x, event.ydata - y)
-            if d < 0.05 and d < min_d: min_d, closest = d, n
-        
-        # self.G var mı kontrol et 
-        if closest is not None and self.G is not None:
-            if closest in self.G.nodes:
-                p = self.G.nodes[closest]
-                txt = f"<b>DÜĞÜM {closest}</b><hr>İşlem: {p.get('processing_delay')}ms<br>Güven: {p.get('reliability')}"
-                QtWidgets.QToolTip.showText(QCursor.pos(), txt)
-        else:
-            QtWidgets.QToolTip.hideText()
-
-    def on_scroll(self, event):
-        """Fare tekerleği ile zoom yapma (İmleç konumuna göre)"""
         if event.inaxes != self.ax: return
         
-        base_scale = 1.2
-        if event.button == 'up':
-            scale_factor = 1 / base_scale
-        elif event.button == 'down':
-            scale_factor = base_scale
-        else:
-            scale_factor = 1
+        if self.panning and event.xdata:
+            dx = event.xdata - self.pan_start_x
+            dy = event.ydata - self.pan_start_y
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            self.ax.set_xlim(xlim[0] - dx, xlim[1] - dx)
+            self.ax.set_ylim(ylim[0] - dy, ylim[1] - dy)
+            self.draw_idle() 
+            return
 
-        self.zoom_view(scale_factor, anchor_x=event.xdata, anchor_y=event.ydata)
+        if not event.xdata or not self.pos or not self.G: return
+        
+        # --- KENAR ALGILAMA MANTIĞI ---
+        mouse_x, mouse_y = event.xdata, event.ydata
+        closest_edge = None
+        min_dist = 0.05 # Kenara ne kadar yaklaşınca algılasın (Hassasiyet)
+        
+        # Tüm kenarları döngüye sok (Performans için Bounding Box kontrolü)
+        for u, v in self.G.edges():
+            if u not in self.pos or v not in self.pos: continue
+            
+            x1, y1 = self.pos[u]
+            x2, y2 = self.pos[v]
+            
+            # 1. Aşama: Kutu Kontrolü (Hızlandırma)
+            # Mouse, hattın olduğu dikdörtgenin içinde mi? (Biraz tolerans ekle)
+            margin = 0.1
+            if not (min(x1, x2) - margin < mouse_x < max(x1, x2) + margin and
+                    min(y1, y2) - margin < mouse_y < max(y1, y2) + margin):
+                continue
+            
+            # 2. Aşama: Gerçek Uzaklık Hesabı
+            d = dist_point_to_segment(mouse_x, mouse_y, x1, y1, x2, y2)
+            if d < min_dist:
+                min_dist = d
+                closest_edge = (u, v)
+
+        # --- GÖRSEL GÜNCELLEME ---
+        if closest_edge != self.last_hovered_edge:
+            self.last_hovered_edge = closest_edge
+            
+            # Eski vurguyu sil
+            for artist in self.highlight_artists:
+                artist.remove()
+            self.highlight_artists = []
+            
+            if closest_edge:
+                u, v = closest_edge
+                x1, y1 = self.pos[u]
+                x2, y2 = self.pos[v]
+                
+                # PARLAK NEON ÇİZGİ ÇİZ
+                line, = self.ax.plot(
+                    [x1, x2], [y1, y2],
+                    color="#facc15", # Neon Sarı
+                    linewidth=4.0,   # Kalın
+                    alpha=1.0,
+                    zorder=10        # En üstte
+                )
+                self.highlight_artists.append(line)
+                
+                # Tooltip: Kenar Bilgilerini Göster
+                data = self.G[u][v]
+                bw = data.get('bandwidth', '-')
+                delay = data.get('delay', '-')
+                rel = data.get('reliability', '-')
+                
+                txt = (f"<b>BAĞLANTI: {u} ↔ {v}</b><hr>"
+                       f"Bant Genişliği: {bw} Mbps<br>"
+                       f"Gecikme: {delay} ms<br>"
+                       f"Güvenilirlik: {rel}")
+                QtWidgets.QToolTip.showText(QCursor.pos(), txt)
+            else:
+                QtWidgets.QToolTip.hideText()
+            
+            self.draw_idle()
+
+    def on_scroll(self, event):
+        if event.inaxes != self.ax: return
+        base_scale = 1.2
+        scale_factor = 1/base_scale if event.button == 'up' else base_scale
+        self.zoom_view(scale_factor, event.xdata, event.ydata)
 
     def zoom_view(self, scale_factor, anchor_x=None, anchor_y=None):
         cur_xlim = self.ax.get_xlim()
         cur_ylim = self.ax.get_ylim()
+        
+        if (cur_xlim[1] - cur_xlim[0]) < 0.1 and scale_factor < 1: return
 
         x_range = cur_xlim[1] - cur_xlim[0]
         y_range = cur_ylim[1] - cur_ylim[0]
-
         new_x_range = x_range * scale_factor
         new_y_range = y_range * scale_factor
 
         if anchor_x is not None and anchor_y is not None:
-            # İmlece göre
             x_ratio = (anchor_x - cur_xlim[0]) / x_range
             y_ratio = (anchor_y - cur_ylim[0]) / y_range
-
             new_x_min = anchor_x - (new_x_range * x_ratio)
             new_y_min = anchor_y - (new_y_range * y_ratio)
         else:
-            # Merkeze göre
-            center_x = cur_xlim[0] + x_range / 2
-            center_y = cur_ylim[0] + y_range / 2
-            
-            new_x_min = center_x - new_x_range / 2
-            new_y_min = center_y - new_y_range / 2
+            cx = cur_xlim[0] + x_range/2
+            cy = cur_ylim[0] + y_range/2
+            new_x_min = cx - new_x_range/2
+            new_y_min = cy - new_y_range/2
 
         self.ax.set_xlim([new_x_min, new_x_min + new_x_range])
         self.ax.set_ylim([new_y_min, new_y_min + new_y_range])
-
-        self.draw()
+        self.draw_idle()
 
     def reset_view(self):
         self.ax.autoscale()
-        self.draw()
+        self.draw_idle()
 
     def draw_graph(self, G, path=None, src=None, dst=None):
-        # BURADA G NESNESİNİ KAYDEDİYORUZ
-        self.G = G  
-        
+        self.G = G
         self.ax.clear()
         self.ax.set_facecolor(THEME["GRAPH_BG"])
-
-        # Layout
-        try:
-            if not self.pos or set(self.pos.keys()) != set(G.nodes()):
-                self.pos = nx.spring_layout(G, seed=42, iterations=30)
-        except Exception:
-            self.pos = nx.random_layout(G, seed=42)
-
-        # Kenarlar
-        nx.draw_networkx_edges(
-            G, self.pos,
-            edge_color="#404855",
-            width=0.1,
-            alpha=0.5,
-            ax=self.ax
-        )
-
-        all_nodes = list(G.nodes())
-
-        # Kaynak & hedef ayır
-        special_nodes = set()
-        if src is not None:
-            special_nodes.add(src)
-        if dst is not None:
-            special_nodes.add(dst)
-
-        normal_nodes = [n for n in all_nodes if n not in special_nodes]
-
-        # Normal düğümler
-        nx.draw_networkx_nodes(
-            G, self.pos,
-            nodelist=normal_nodes,
-            node_size=30,
-            node_color=THEME["NODE_COLOR"],
-            alpha=0.9,
-            ax=self.ax
-        )
-
-        # Kaynak (S)
-        if src is not None:
-            nx.draw_networkx_nodes(
-                G, self.pos,
-                nodelist=[src],
-                node_color="#22c55e",
-                node_size=100,
-                ax=self.ax
-            )
-
-        # Hedef (D)
-        if dst is not None:
-            nx.draw_networkx_nodes(
-                G, self.pos,
-                nodelist=[dst],
-                node_color="#ef4444",
-                node_size=100,
-                ax=self.ax
-            )
-
-        # Yol varsa
-        if path is not None and len(path) > 1:
-            path_edges = list(zip(path[:-1], path[1:]))
-
-            nx.draw_networkx_edges(
-                G, self.pos,
-                edgelist=path_edges,
-                width=2.8,
-                edge_color=THEME["PATH_COLOR"],
-                alpha=1.0,
-                ax=self.ax
-            )
-
-            path_nodes = [
-                n for n in path
-                if n not in (src, dst)
-            ]
-
-            nx.draw_networkx_nodes(
-                G, self.pos,
-                nodelist=path_nodes,
-                node_color=THEME["PATH_COLOR"],
-                node_size=70,
-                ax=self.ax
-                            )
-            
-        # 🔁 Kaynak & hedefi EN SON tekrar çiz
-        if src is not None:
-            nx.draw_networkx_nodes(
-                G, self.pos,
-                nodelist=[src],
-                node_color="#22c55e",
-                node_size=100,
-                ax=self.ax
-            )
-
-        if dst is not None:
-            nx.draw_networkx_nodes(
-                G, self.pos,
-                nodelist=[dst],
-                node_color="#ef4444",
-                node_size=100,
-                ax=self.ax
-            )
         
-            legend_elements = [
-        Line2D([0], [0], marker='o', color='none',
-            markerfacecolor="#22c55e", markersize=8, label="Kaynak"),
+        self.highlight_artists = []
+        self.last_hovered_edge = None
 
-        Line2D([0], [0], marker='o', color='none',
-            markerfacecolor="#ef4444", markersize=8, label="Hedef"),
+        # --- RENK AYARLARI ---
+        COLOR_BG_NODE = "#60a5fa" 
+        COLOR_BG_EDGE = "#475569" 
+        
+        COLOR_SRC = "#22c55e"     
+        COLOR_DST = "#ef4444"     
+        COLOR_PATH = "#00e5ff"    
+        
+        # Z-ORDER
+        Z_BG_EDGE = 1
+        Z_BG_NODE = 2
+        Z_PATH_EDGE = 3
+        Z_PATH_NODE = 4
+        Z_SRC_DST = 5
 
-        Line2D([0], [0], marker='o', color='none',
-            markerfacecolor=THEME["PATH_COLOR"], markersize=8, label="Yol"),
+        # --- KONUM HESAPLAMA ---
+        if not self.pos or set(self.pos.keys()) != set(G.nodes()):
+            try:
+                self.pos = nx.kamada_kawai_layout(G)
+            except:
+                self.pos = nx.spring_layout(G, seed=42)
 
-        Line2D([0], [0], marker='o', color='none',
-            markerfacecolor=THEME["NODE_COLOR"], markersize=8, label="Diğer"),
-                            ]
-            self.ax.legend(
-        handles=legend_elements,
-        loc="upper left",
-        frameon=True,
-        facecolor=THEME["GRAPH_BG"],
-        edgecolor="#374151",
-        labelcolor="white",
-        fontsize=9
-                   )
+        # 1. ARKA PLAN KENARLARI (Biraz daha görünür yaptık)
+        nx.draw_networkx_edges(
+            G, self.pos, 
+            edge_color=COLOR_BG_EDGE, 
+            width=0.8, 
+            alpha=0.4, # İsteğin üzerine daha belirgin
+            ax=self.ax, 
+            arrows=False 
+        )
+
+        # 2. ARKA PLAN DÜĞÜMLERİ (Net ve Solid)
+        all_nodes = list(G.nodes())
+        path_nodes_set = set(path) if path else set()
+        special_nodes = {src, dst} if src is not None else set()
+        
+        bg_nodes = [n for n in all_nodes if n not in path_nodes_set and n not in special_nodes]
+
+        nx.draw_networkx_nodes(
+            G, self.pos, 
+            nodelist=bg_nodes, 
+            node_size=45,         
+            node_color=COLOR_BG_NODE, 
+            alpha=1.0,            # TAM GÖRÜNÜR
+            ax=self.ax,
+            edgecolors="#1e293b", 
+            linewidths=0.5
+        ).set_zorder(Z_BG_NODE)
+
+        # 3. YOL (Varsa)
+        if path and len(path) > 1:
+            path_edges = list(zip(path[:-1], path[1:]))
+            
+            nx.draw_networkx_edges(
+                G, self.pos, 
+                edgelist=path_edges, 
+                width=3.0, 
+                edge_color=COLOR_PATH, 
+                alpha=1.0, 
+                ax=self.ax,
+                arrows=True,       
+                arrowsize=20,      
+                arrowstyle='-|>'
+            )
+            
+            path_mid_nodes = [n for n in path if n not in (src, dst)]
+            nx.draw_networkx_nodes(
+                G, self.pos, 
+                nodelist=path_mid_nodes, 
+                node_color=COLOR_PATH, 
+                node_size=80,      
+                ax=self.ax,
+                linewidths=1.5,
+                edgecolors="white" 
+            ).set_zorder(Z_PATH_NODE)
+
+        # 4. KAYNAK ve HEDEF
+        if src is not None and src in G:
+            nx.draw_networkx_nodes(
+                G, self.pos, 
+                nodelist=[src], 
+                node_color=COLOR_SRC, 
+                node_size=220, 
+                ax=self.ax,
+                edgecolors="white", 
+                linewidths=2.5
+            ).set_zorder(Z_SRC_DST)
+            
+        if dst is not None and dst in G:
+            nx.draw_networkx_nodes(
+                G, self.pos, 
+                nodelist=[dst], 
+                node_color=COLOR_DST, 
+                node_size=220, 
+                ax=self.ax,
+                edgecolors="white",
+                linewidths=2.5
+            ).set_zorder(Z_SRC_DST)
+
+        # Legend
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='none', markerfacecolor=COLOR_SRC, markersize=10, label="Kaynak (S)", markeredgecolor='white'),
+            Line2D([0], [0], marker='o', color='none', markerfacecolor=COLOR_DST, markersize=10, label="Hedef (D)", markeredgecolor='white'),
+            Line2D([0], [0], marker='o', color='none', markerfacecolor=COLOR_PATH, markersize=10, label="Seçilen Yol", markeredgecolor='white'),
+            Line2D([0], [0], color='#facc15', lw=3, label="Bağlantı Seçimi"),
+        ]
+        
+        legend = self.ax.legend(
+            handles=legend_elements, 
+            loc="upper left", 
+            frameon=True, 
+            facecolor=THEME["GRAPH_BG"], 
+            edgecolor="#374151", 
+            labelcolor="white", 
+            fontsize=9
+        )
+        legend.get_frame().set_alpha(0.85)
 
         self.ax.set_axis_off()
-        self.fig.tight_layout()
-        self.draw()
+        self.draw_idle()
 
 # ==========================================================
 #  GRAFİK 2: PERFORMANS KIYASLAMA
@@ -425,38 +458,41 @@ class ComparisonCanvas(FigureCanvas):
         self.fig, self.axs = plt.subplots(2, 2)
         super().__init__(self.fig)
         self.setParent(parent)
-        
         self.fig.patch.set_facecolor(THEME["GRAPH_BG"])
-        self.fig.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1, hspace=0.4, wspace=0.3)
+        self.fig.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1, hspace=0.5, wspace=0.3)
 
     def update_charts(self, results):
-        algos = ["GA", "RL", "ABC", "SA"]
-        bar_colors = ["#22d3ee", "#818cf8", "#34d399", "#f472b6"]
+        algos = list(results.keys())
+        bar_colors = ["#22d3ee", "#818cf8", "#34d399", "#f472b6"][:len(algos)]
 
-        costs = [results.get(a, {}).get('total_cost', 0) for a in algos]
-        times = [results.get(a, {}).get('time_ms', 0) for a in algos]
-        delays = [results.get(a, {}).get('delay', 0) for a in algos]
-        rels = [results.get(a, {}).get('rel_cost', 0) for a in algos]
+        costs = [results[a].get('total_cost', 0) for a in algos]
+        times = [results[a].get('time_ms', 0) for a in algos]
+        delays = [results[a].get('delay', 0) for a in algos]
+        rels = [results[a].get('rel_prob', 0) for a in algos]
 
-        self._plot_bar(self.axs[0, 0], algos, costs, bar_colors, "Amaç Fonksiyonu (Maliyet)", "Düşük İyi")
-        self._plot_bar(self.axs[0, 1], algos, times, bar_colors, "Hesaplama Süresi (ms)", "ms")
+        self._plot_bar(self.axs[0, 0], algos, costs, bar_colors, "Amaç Fonksiyonu (Düşük İyi)", "Maliyet")
+        self._plot_bar(self.axs[0, 1], algos, times, bar_colors, "Hesaplama Süresi", "ms")
         self._plot_bar(self.axs[1, 0], algos, delays, bar_colors, "Toplam Gecikme", "ms")
-        self._plot_bar(self.axs[1, 1], algos, rels, bar_colors, "Toplam Güvenilirlik", "Oran (0-1)")
+        self._plot_bar(self.axs[1, 1], algos, rels, bar_colors, "Güvenilirlik Oranı", "(0-1)")
 
-        self.draw()
+        self.draw_idle()
 
     def _plot_bar(self, ax, x, y, c, title, ylabel):
         ax.clear()
         ax.set_facecolor(THEME["GRAPH_BG"])
-        ax.bar(x, y, color=c, width=0.6, zorder=3)
-        ax.set_title(title, color='white', fontsize=10, fontweight='bold', pad=10)
+        bars = ax.bar(x, y, color=c, width=0.5, zorder=3)
+        ax.set_title(title, color='white', fontsize=9, fontweight='bold', pad=8)
         ax.set_ylabel(ylabel, color='#9ca3af', fontsize=8)
-        ax.tick_params(axis='x', colors='white', labelsize=9)
+        ax.tick_params(axis='x', colors='white', labelsize=8)
         ax.tick_params(axis='y', colors='#9ca3af', labelsize=8)
-        ax.grid(axis='y', linestyle='--', alpha=0.3, color='white', zorder=0)
+        ax.grid(axis='y', linestyle='--', alpha=0.2, color='white', zorder=0)
         
-        for spine in ax.spines.values():
-            spine.set_edgecolor('#374151')
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{height:.2f}', ha='center', va='bottom', color='white', fontsize=7)
+
+        for spine in ax.spines.values(): spine.set_edgecolor('#374151')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
@@ -468,46 +504,40 @@ class Window(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("QoS Yönlendirme Simülatörü")
         self.resize(1450, 850)
+
+        self.manager = None
+        self.G = nx.Graph() 
         
-        self.df_demand = None
-        if PANDAS_AVAILABLE and os.path.exists(DEMAND_FILE):
-            try:
-                self.df_demand = pd.read_csv(DEMAND_FILE, sep=";", encoding="utf-8")
-                self.df_demand.columns = [c.strip().lower() for c in self.df_demand.columns]
-            except: pass
+        if ALGO_IMPORTED:
+            self.manager = NetworkManager()
+            if os.path.exists(NODE_FILE) and os.path.exists(EDGE_FILE):
+                success = self.manager.load_data(NODE_FILE, EDGE_FILE, DEMAND_FILE)
+                if success:
+                    self.G = self.manager.G
+                else:
+                    QtWidgets.QMessageBox.critical(self, "Hata", "CSV verileri okunurken hata oluştu!")
+            else:
+                QtWidgets.QMessageBox.warning(self, "Dosya Yok", f"Veri dosyaları bulunamadı:\n{DATA_DIR}")
 
-        self.generate_initial_graph()
         self.build_ui()
-
-    def generate_initial_graph(self):
-        self.N = 250
-        self.G = nx.erdos_renyi_graph(self.N, 0.4, seed=42)
-
-        for u, v in self.G.edges():
-            self.G[u][v]['bandwidth'] = random.randint(100, 1000)
-            self.G[u][v]['delay'] = random.randint(3, 15)
-            self.G[u][v]['reliability'] = round(random.uniform(0.95, 0.999), 4)
-
-        for n in self.G.nodes():
-            self.G.nodes[n]['processing_delay'] = round(random.uniform(0.5, 2.0), 2)
-            self.G.nodes[n]['reliability'] = round(random.uniform(0.95, 0.999), 4)
+        self.canvas_net.draw_graph(self.G)
 
     def on_scenario_changed(self, idx):
         data = self.scenario_combo.itemData(idx)
         if data:
-            self.src_edit.setText(str(data[0]))
-            self.dst_edit.setText(str(data[1]))
+            self.src_edit.setText(str(data['src']))
+            self.dst_edit.setText(str(data['dst']))
+            self.current_bw_demand = data['bw'] 
 
     def build_ui(self):
         main_layout = QtWidgets.QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(15)
 
-        # SOL PANEL
+        # --- SOL PANEL ---
         sidebar = QtWidgets.QVBoxLayout()
         sidebar.setSpacing(15)
 
-        # Algoritma
         gb_algo = QtWidgets.QGroupBox("Algoritma Seçimi")
         l_algo = QtWidgets.QVBoxLayout()
         self.algo_combo = QtWidgets.QComboBox()
@@ -516,39 +546,27 @@ class Window(QtWidgets.QWidget):
         gb_algo.setLayout(l_algo)
         sidebar.addWidget(gb_algo)
 
-        # Rota
-        gb_route = QtWidgets.QGroupBox("Rota Ayarları")
+        gb_route = QtWidgets.QGroupBox("Rota & Talep")
         l_route = QtWidgets.QFormLayout()
         
         self.scenario_combo = QtWidgets.QComboBox()
-        loaded = False
-        if self.df_demand is not None:
-            try:
-                cols = self.df_demand.columns
-                src_c = next((c for c in cols if c in ['kaynak', 'src', 'source']), None)
-                dst_c = next((c for c in cols if c in ['hedef', 'dst', 'destination']), None)
-                bw_c  = next((c for c in cols if c in ['mbps', 'demand', 'bw']), None)
-                if src_c and dst_c:
-                    if not bw_c and len(cols) >= 3:
-                        rem = [c for c in cols if c!=src_c and c!=dst_c]
-                        if rem: bw_c = rem[0]
-                    for _, row in self.df_demand.iterrows():
-                        s, d = int(row[src_c]), int(row[dst_c])
-                        m = int(row[bw_c]) if bw_c else 0
-                        self.scenario_combo.addItem(f"S:{s} -> D:{d} | {m} Mbps", (s, d, m))
-                    loaded = True
-            except: pass
-        if not loaded:
-            self.scenario_combo.addItem("Örnek: S:0 -> D:249 | 100 Mbps", (0, 249, 100))
+        if self.manager and self.manager.demands:
+            for i, dem in enumerate(self.manager.demands):
+                text = f"Senaryo {i+1}: S:{dem['src']} -> D:{dem['dst']} | {dem['bw']} Mbps"
+                self.scenario_combo.addItem(text, dem)
+        else:
+            self.scenario_combo.addItem("Veri Yok - Manuel Giriş", {'src':0, 'dst':1, 'bw':0})
 
         self.scenario_combo.currentIndexChanged.connect(self.on_scenario_changed)
-        l_route.addRow("Senaryo:", self.scenario_combo)
-        self.src_edit = QtWidgets.QLineEdit("0"); self.dst_edit = QtWidgets.QLineEdit(str(self.N-1))
-        l_route.addRow("Kaynak:", self.src_edit); l_route.addRow("Hedef:", self.dst_edit)
+        l_route.addRow("Talep Listesi:", self.scenario_combo)
+        
+        self.src_edit = QtWidgets.QLineEdit("0")
+        self.dst_edit = QtWidgets.QLineEdit("1")
+        l_route.addRow("Kaynak (ID):", self.src_edit)
+        l_route.addRow("Hedef (ID):", self.dst_edit)
         gb_route.setLayout(l_route)
         sidebar.addWidget(gb_route)
 
-        # Sliderlar
         gb_opt = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları")
         l_opt = QtWidgets.QVBoxLayout()
         self.sliders = []
@@ -558,11 +576,11 @@ class Window(QtWidgets.QWidget):
             s = QtWidgets.QSlider(QtCore.Qt.Horizontal); s.setValue(v); s.setRange(0, 100)
             s.valueChanged.connect(lambda val, l=lbl: l.setText(str(val)))
             row.addWidget(QtWidgets.QLabel(t)); row.addWidget(s); row.addWidget(lbl)
-            l_opt.addLayout(row); self.sliders.append(s)
+            l_opt.addLayout(row)
+            self.sliders.append(s)
         gb_opt.setLayout(l_opt)
         sidebar.addWidget(gb_opt)
 
-        # Butonlar
         self.btn_run = QtWidgets.QPushButton("HESAPLA VE ÇİZ")
         self.btn_run.setMinimumHeight(45)
         self.btn_run.clicked.connect(self.run_single)
@@ -578,82 +596,51 @@ class Window(QtWidgets.QWidget):
         w_side = QtWidgets.QWidget(); w_side.setLayout(sidebar); w_side.setFixedWidth(320)
         main_layout.addWidget(w_side)
 
-        # ORTA PANEL (SEKMELER)
+        # --- ORTA PANEL ---
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane { border: 0; }
             QTabBar::tab { background: #1e293b; color: #94a3b8; padding: 12px; margin-right: 4px; border-top-left-radius: 4px; border-top-right-radius: 4px; font-weight: bold; }
             QTabBar::tab:selected { background: #7b2cff; color: white; }
         """)
-        
-        # --- TAB 1: Ağ Topolojisi + Zoom Kontrolleri ---
+
         tab1_widget = QtWidgets.QWidget()
         tab1_layout = QtWidgets.QVBoxLayout(tab1_widget)
         tab1_layout.setContentsMargins(0, 5, 0, 0)
-
-        # Zoom Araç Çubuğu
+        
         zoom_toolbar = QtWidgets.QHBoxLayout()
-        zoom_toolbar.addStretch() 
-
-        # BUTONLARI VE FONTU BÜYÜTTÜK
-        btn_zoom_in = QtWidgets.QPushButton("+")
-        btn_zoom_in.setFixedSize(40, 40) # 30->40
-        btn_zoom_in.setToolTip("Yakınlaştır")
-        btn_zoom_in.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 24px; font-weight: bold;")
-
-        btn_zoom_out = QtWidgets.QPushButton("-")
-        btn_zoom_out.setFixedSize(40, 40) # 30->40
-        btn_zoom_out.setToolTip("Uzaklaştır")
-        btn_zoom_out.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 24px; font-weight: bold;")
+        zoom_toolbar.addStretch()
+        btn_in = QtWidgets.QPushButton("+"); btn_in.setFixedSize(40,40)
+        btn_out = QtWidgets.QPushButton("-"); btn_out.setFixedSize(40,40)
+        btn_rst = QtWidgets.QPushButton("⟲"); btn_rst.setFixedSize(40,40)
+        for b in [btn_in, btn_out, btn_rst]:
+            b.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 20px; font-weight: bold;")
+            zoom_toolbar.addWidget(b)
         
-        btn_reset = QtWidgets.QPushButton("⟲")
-        btn_reset.setFixedSize(40, 40) # 30->40
-        btn_reset.setToolTip("Görünümü Sıfırla")
-        btn_reset.setStyleSheet("background-color: #374151; border-radius: 4px; font-size: 20px; font-weight: bold;")
-
-        zoom_toolbar.addWidget(btn_zoom_in)
-        zoom_toolbar.addWidget(btn_zoom_out)
-        zoom_toolbar.addWidget(btn_reset)
-
         self.canvas_net = GraphCanvas(self)
-        
-        # Buton olayları
-        btn_zoom_in.clicked.connect(lambda: self.canvas_net.zoom_view(0.8))  
-        btn_zoom_out.clicked.connect(lambda: self.canvas_net.zoom_view(1.25)) 
-        btn_reset.clicked.connect(self.canvas_net.reset_view)
+        btn_in.clicked.connect(lambda: self.canvas_net.zoom_view(0.8))
+        btn_out.clicked.connect(lambda: self.canvas_net.zoom_view(1.25))
+        btn_rst.clicked.connect(self.canvas_net.reset_view)
 
         tab1_layout.addLayout(zoom_toolbar)
         tab1_layout.addWidget(self.canvas_net)
-
         self.tabs.addTab(tab1_widget, "📍 AĞ TOPOLOJİSİ")
 
-        # --- TAB 2: Performans ---
         self.canvas_perf = ComparisonCanvas(self)
         self.tabs.addTab(self.canvas_perf, "📊 ALGORİTMA PERFORMANS")
-
         main_layout.addWidget(self.tabs, 1)
 
-        # SAĞ PANEL
+        # --- SAĞ PANEL ---
         right_layout = QtWidgets.QVBoxLayout()
         right_layout.setSpacing(10)
 
         header_layout = QtWidgets.QHBoxLayout()
         lbl_results = QtWidgets.QLabel("Sonuçlar")
         lbl_results.setStyleSheet("font-size: 16px; font-weight: bold;")
-        header_layout.addWidget(lbl_results)
-
         self.algo_pill = QtWidgets.QLabel("—")
         self.algo_pill.setAlignment(QtCore.Qt.AlignCenter)
-        self.algo_pill.setStyleSheet("""
-            QLabel {
-                background-color: #7b2cff;
-                color: #ffffff;
-                border-radius: 12px;
-                padding: 4px 10px;
-                font-weight: 600;
-                font-size: 11px;
-            }
-        """)
+        self.algo_pill.setStyleSheet("background-color: #7b2cff; color: white; border-radius: 12px; padding: 4px 10px; font-weight: 600; font-size: 11px;")
+        header_layout.addWidget(lbl_results)
         header_layout.addStretch()
         header_layout.addWidget(self.algo_pill)
         right_layout.addLayout(header_layout)
@@ -661,33 +648,25 @@ class Window(QtWidgets.QWidget):
         self.path_frame = QtWidgets.QFrame()
         self.path_frame.setObjectName("resultCard")
         pf_layout = QtWidgets.QVBoxLayout(self.path_frame)
-
         top_path_row = QtWidgets.QHBoxLayout()
         self.lbl_path_title = QtWidgets.QLabel("Bulunan Yol")
         self.lbl_path_title.setStyleSheet("font-size: 12px; font-weight: 600;")
         self.lbl_hops = QtWidgets.QLabel("(0 sıçrama)")
         self.lbl_hops.setStyleSheet("font-size: 11px; color: #a5b1c2;")
-        top_path_row.addWidget(self.lbl_path_title)
-        top_path_row.addStretch()
-        top_path_row.addWidget(self.lbl_hops)
+        top_path_row.addWidget(self.lbl_path_title); top_path_row.addStretch(); top_path_row.addWidget(self.lbl_hops)
         pf_layout.addLayout(top_path_row)
-
         self.lbl_path_nodes = QtWidgets.QLabel("-")
-        self.lbl_path_nodes.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {THEME['PATH_COLOR']};")
+        self.lbl_path_nodes.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {THEME['PATH_COLOR']};")
         self.lbl_path_nodes.setWordWrap(True)
         pf_layout.addWidget(self.lbl_path_nodes)
         right_layout.addWidget(self.path_frame)
 
         grid_w = QtWidgets.QWidget()
-        grid = QtWidgets.QGridLayout(grid_w)
-        grid.setSpacing(8)
-        grid.setContentsMargins(0, 0, 0, 0)
-
+        grid = QtWidgets.QGridLayout(grid_w); grid.setSpacing(8); grid.setContentsMargins(0,0,0,0)
         c1, self.val_delay = create_card("Toplam Gecikme", "#c4c4c4", big=True)
         c2, self.val_rel = create_card("Güvenilirlik", "#c4c4c4", big=True)
         c3, self.val_res = create_card("Kaynak Maliyeti", "#c4c4c4", big=True)
         c4, self.val_total = create_card("Ağırlıklı Maliyet", "#c4c4c4", big=True)
-
         grid.addWidget(c1, 0, 0); grid.addWidget(c2, 0, 1)
         grid.addWidget(c3, 1, 0); grid.addWidget(c4, 1, 1)
         right_layout.addWidget(grid_w)
@@ -697,144 +676,104 @@ class Window(QtWidgets.QWidget):
         lbl_time_title.setStyleSheet("font-size: 11px; color: #a5b1c2;")
         self.lbl_time_val = QtWidgets.QLabel("- ms")
         self.lbl_time_val.setStyleSheet("font-size: 13px; font-weight: 600;")
-        time_row.addWidget(lbl_time_title)
-        time_row.addStretch()
-        time_row.addWidget(self.lbl_time_val)
+        time_row.addWidget(lbl_time_title); time_row.addStretch(); time_row.addWidget(self.lbl_time_val)
         right_layout.addLayout(time_row)
 
         self.path_box = QtWidgets.QTextEdit()
         self.path_box.setReadOnly(True)
-        self.path_box.setStyleSheet("""
-        QTextEdit{
-            background:#1f2937;
-            color:#e5e7eb;
-            border-radius:10px;
-            padding:10px;
-            font-size:14px;
-            font-family: Consolas, 'Courier New', monospace;
-            }
-            """)
-
-        self.path_box.setReadOnly(True)
+        self.path_box.setStyleSheet("background:#1f2937; color:#e5e7eb; border-radius:10px; padding:10px; font-size:14px; font-family: Consolas, monospace;")
         self.path_box.setPlaceholderText("Log kayıtları...")
         right_layout.addWidget(self.path_box)
 
-        right_widget = QtWidgets.QWidget()
-        right_widget.setLayout(right_layout)
-        right_widget.setFixedWidth(280)
-        main_layout.addWidget(right_widget)
+        w_right = QtWidgets.QWidget(); w_right.setLayout(right_layout); w_right.setFixedWidth(280)
+        main_layout.addWidget(w_right)
 
-        self.canvas_net.draw_graph(self.G)
+        if self.scenario_combo.count() > 0:
+            self.on_scenario_changed(0)
 
-    # İŞLEVLER
     def run_single(self):
-        try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
+        try: 
+            s, d = int(self.src_edit.text()), int(self.dst_edit.text())
+            bw = getattr(self, 'current_bw_demand', 0)
         except: return
+        
         w = tuple(sl.value()/100 for sl in self.sliders)
         key = ["GA", "RL", "ABC", "SA"][self.algo_combo.currentIndex()]
-        
+
         self.tabs.setCurrentIndex(0)
         self.btn_run.setText("Hesaplanıyor..."); self.btn_run.setEnabled(False)
-        self.worker = RoutingWorker("SINGLE", key, self.G, s, d, w)
+        self.path_box.setText("Algoritma çalışıyor, lütfen bekleyin...")
+        
+        self.worker = RoutingWorker("SINGLE", key, self.manager, s, d, w, bw)
         self.worker.finished_single.connect(self.on_single_done)
+        self.worker.error.connect(self.on_error)
         self.worker.start()
 
     def on_single_done(self, path, cost, metrics):
         self.btn_run.setText("HESAPLA VE ÇİZ"); self.btn_run.setEnabled(True)
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
         except: s, d = None, None
-        self.canvas_net.draw_graph(self.G, path, s, d)
         
+        self.canvas_net.draw_graph(self.G, path, s, d)
         self.algo_pill.setText(self.algo_combo.currentText())
 
-        path_str = " -> ".join(map(str, path)) if path else "-"
+        path_str = " -> ".join(map(str, path)) if path else "YOL BULUNAMADI"
         self.lbl_path_nodes.setText(path_str)
-        self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(0 sıçrama)")
+        self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(-)")
 
         self.val_delay.setText(f"{metrics.get('delay',0):.2f} ms")
-        self.val_rel.setText(f"{metrics.get('rel_cost',0):.2f}")
+        self.val_rel.setText(f"{metrics.get('rel_prob',0):.4f}")
         self.val_res.setText(f"{metrics.get('res_cost',0):.2f}")
         self.val_total.setText(f"{metrics.get('total_cost', cost):.4f}")
-
         self.lbl_time_val.setText(f"{metrics.get('time_ms',0):.2f} ms")
 
-        self.path_box.setPlainText(
-            f"Algoritma: {self.algo_combo.currentText()}\n"
-            f"Toplam Maliyet: {metrics.get('total_cost', cost)}\n"
-            f"Yol: {path_str}"
-)
+        log = f"ALGORİTMA: {self.algo_combo.currentText()}\n"
+        log += f"Talep: {getattr(self, 'current_bw_demand', 0)} Mbps\n"
+        log += f"Durum: {'BAŞARILI' if path else 'BAŞARISIZ'}\n"
+        log += f"Maliyet: {metrics.get('total_cost', cost)}\n"
+        log += f"Rota: {path_str}"
+        self.path_box.setPlainText(log)
 
     def run_compare(self):
-        try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
+        try: 
+            s, d = int(self.src_edit.text()), int(self.dst_edit.text())
+            bw = getattr(self, 'current_bw_demand', 0)
         except: return
         w = tuple(sl.value()/100 for sl in self.sliders)
         
         self.tabs.setCurrentIndex(1)
         self.btn_compare.setText("Kıyaslanıyor..."); self.btn_compare.setEnabled(False)
-        self.worker = RoutingWorker("COMPARE", "ALL", self.G, s, d, w)
+        
+        self.worker = RoutingWorker("COMPARE", "ALL", self.manager, s, d, w, bw)
         self.worker.finished_batch.connect(self.on_batch_done)
+        self.worker.error.connect(self.on_error)
         self.worker.start()
 
     def on_batch_done(self, results):
-        # BUTONU SIFIRLA VE AKTİF ET
-        self.btn_compare.setText("TÜMÜNÜ KIYASLA")
-        self.btn_compare.setEnabled(True)
-
-        best_algo = None
-        best_cost = float("inf")
-
-        for algo, m in results.items():
-            cost = float(m.get("total_cost", float("inf")))
-            if cost < best_cost:
-                best_cost = cost
-                best_algo = algo
-
-        def block(algo, m):
-            return f"""
-            <div style="margin-top:10px;">
-            <b style="color:#93c5fd;">▶ {algo}</b><br>
-            <span style="color:#cbd5f5;">Gecikme</span> : {m.get('delay',0):.2f} ms<br>
-            <span style="color:#cbd5f5;">Güvenilirlik</span> : {m.get('rel_cost',0):.4f}<br>
-            <span style="color:#cbd5f5;">Kaynak</span> : {m.get('res_cost',0):.4f}<br>
-            <span style="color:#cbd5f5;">Toplam</span> : <b>{m.get('total_cost',0):.4f}</b><br>
-            <span style="color:#cbd5f5;">Süre</span> : {m.get('time_ms',0):.2f} ms
-            </div>
-            """
-
-        html = f"""
-        <div>
-        <h2 style="color:#60a5fa; margin-bottom:5px;">KIYASLAMA BİTTİ</h2>
-
-        <p style="margin-top:10px;">
-            <b>Önerilen Algoritma:</b><br>
-            <span style="
-                font-size:20px;
-                font-weight:800;
-                color:#22c55e;
-            ">
-            {best_algo}
-            </span>
-        </p>
-
-        <p style="color:#a5b4fc;">
-            En düşük <b>ağırlıklı maliyet</b> skoruna sahip.
-        </p>
-
-        <h3 style="margin-top:15px; color:#93c5fd;">DETAYLAR</h3>
-        """
-
+        self.btn_compare.setText("TÜMÜNÜ KIYASLA"); self.btn_compare.setEnabled(True)
+        
+        best_algo = min(results, key=lambda k: results[k].get("total_cost", float('inf'))) if results else "-"
+        
+        html = f"<div><h2 style='color:#60a5fa;'>KIYASLAMA BİTTİ</h2>"
+        html += f"<p><b>En İyi:</b> <span style='color:#22c55e; font-size:18px;'>{best_algo}</span></p>"
+        
         ordered = sorted(results.items(), key=lambda kv: kv[1].get("total_cost", float("inf")))
         for algo, m in ordered:
-            html += block(algo, m)
-
+            html += f"""
+            <div style="margin-top:10px; border-bottom:1px solid #374151; padding-bottom:5px;">
+            <b style="color:#93c5fd;">▶ {algo}</b><br>
+            <span style="color:#cbd5f5;">Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br>
+            <span style="color:#cbd5f5;">Maliyet: <b>{m.get('total_cost',0):.4f}</b></span>
+            </div>"""
         html += "</div>"
-
         self.path_box.setHtml(html)
+        self.canvas_perf.update_charts(results)
 
-        try:
-            self.canvas_perf.update_charts(results)
-        except:
-            pass
+    def on_error(self, msg):
+        self.btn_run.setText("HESAPLA VE ÇİZ"); self.btn_run.setEnabled(True)
+        self.btn_compare.setText("TÜMÜNÜ KIYASLA"); self.btn_compare.setEnabled(True)
+        self.path_box.setPlainText(f"HATA OLUŞTU:\n{msg}")
+        QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
