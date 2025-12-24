@@ -1,373 +1,56 @@
-import pandas as pd
-import networkx as nx
-import numpy as np
 import random
-import time
-import os
+import networkx as nx
 
-# =============================================================================
-# 1. AYARLAR VE PARAMETRELER
-# =============================================================================
-DATA_FOLDER = "data"  # Verilerin bulunduğu klasör
-NODE_FILE = "BSM307_317_Guz2025_TermProject_NodeData(in).csv"
-EDGE_FILE = "BSM307_317_Guz2025_TermProject_EdgeData(in).csv"
-DEMAND_FILE = "BSM307_317_Guz2025_TermProject_DemandData(in).csv"
-
-# Genetik Algoritma Hiperparametreleri
-POPULATION_SIZE = 60      # Popülasyon büyüklüğü
-GENERATIONS = 100         # Jenerasyon sayısı
-MUTATION_RATE = 0.3       # Mutasyon olasılığı
-ELITISM_COUNT = 4         # Her nesilde korunan en iyi birey sayısı
-REPETITIONS = 5           # Her senaryo için tekrar sayısı
-
-# Optimizasyon Ağırlıkları (Toplam = 1.0)
-W_DELAY = 0.33
-W_RELIABILITY = 0.33
-W_RESOURCE = 0.34
-
-# =============================================================================
-# 2. VERİ YÜKLEME VE GRAF OLUŞTURMA
-# =============================================================================
-def load_data():
-    """CSV dosyalarını okur ve NetworkX grafını oluşturur."""
-    print("Veri setleri yükleniyor...")
-    
-    def clean_float(x):
-        if isinstance(x, str):
-            return float(x.replace(',', '.'))
-        return x
-
-    try:
-        # Kodun çalıştığı dizini baz alarak dosya yolunu bul
-        base_path = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-        
-        # Eğer 'datalar' klasörü script'in yanındaysa orayı kullan, yoksa direkt bak
-        data_dir = os.path.join(base_path, DATA_FOLDER)
-        if not os.path.exists(data_dir):
-            data_dir = base_path # Datalar ana dizindeyse
-
-        df_node = pd.read_csv(os.path.join(data_dir, NODE_FILE), sep=';')
-        df_edge = pd.read_csv(os.path.join(data_dir, EDGE_FILE), sep=';')
-        df_demand = pd.read_csv(os.path.join(data_dir, DEMAND_FILE), sep=';')
-    except Exception as e:
-        print(f"HATA: Dosya okuma hatası: {e}")
-        return None, None
-
-    # Veri Temizleme
-    df_node['s_ms'] = df_node['s_ms'].apply(clean_float)
-    df_node['r_node'] = df_node['r_node'].apply(clean_float)
-    df_edge['r_link'] = df_edge['r_link'].apply(clean_float)
-    df_edge['capacity_mbps'] = df_edge['capacity_mbps'].apply(clean_float)
-    df_edge['delay_ms'] = df_edge['delay_ms'].apply(clean_float)
-
-    # Graf Oluşturma
-    G = nx.DiGraph()
-    
-    # Düğümler
-    for _, row in df_node.iterrows():
-        G.add_node(int(row['node_id']), 
-                   proc_delay=row['s_ms'], 
-                   reliability=row['r_node'])
-    
-    # Kenarlar
-    for _, row in df_edge.iterrows():
-        # Kapasite 0 ise hata vermemesi için minik bir değer ata
-        bw = row['capacity_mbps'] if row['capacity_mbps'] > 0 else 0.1
-        G.add_edge(int(row['src']), int(row['dst']), 
-                   bandwidth=bw, 
-                   link_delay=row['delay_ms'], 
-                   reliability=row['r_link'])
-    
-    print(f"Graf Başarıyla Oluşturuldu: {G.number_of_nodes()} Node, {G.number_of_edges()} Edge.")
-    return G, df_demand
-
-# =============================================================================
-# 3. GENETİK ALGORİTMA SINIFI
-# =============================================================================
-class GeneticAlgorithmRouter:
-    def __init__(self, G, source, target, demand):
+class GeneticAlgorithm:
+    def __init__(self, G, src, dst, weights):
         self.G = G
-        self.source = source
-        self.target = target
-        self.demand = demand
-        self.population = [] 
+        self.src = src
+        self.dst = dst
+        self.weights = weights # (w_delay, w_rel, w_cost)
 
     def calculate_fitness(self, path):
-        """Maliyet Hesaplama (Düşük Maliyet = İyi Yol)"""
-        # 1. Yol Geçerliliği Kontrolü
-        if not path or path[0] != self.source or path[-1] != self.target:
-            return float('inf')
-
         total_delay = 0
-        total_rel_log = 0 
-        resource_cost = 0
-
-        # 2. Düğüm Maliyetleri (Ara düğümler)
-        if len(path) > 2:
-            for node in path[1:-1]:
-                if node not in self.G: return float('inf')
-                d = self.G.nodes[node]
-                total_delay += d.get('proc_delay', 0)
-                r_node = d.get('reliability', 0.999)
-                total_rel_log += -np.log(r_node if r_node > 0 else 1e-9)
-
-        # 3. Kenar (Link) Maliyetleri
+        total_rel = 1.0
+        total_bw_cost = 0
+        
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
-            if not self.G.has_edge(u, v): return float('inf')
-            
-            edge = self.G[u][v]
-            total_delay += edge.get('link_delay', 0)
-            
-            r_link = edge.get('reliability', 0.999)
-            total_rel_log += -np.log(r_link if r_link > 0 else 1e-9)
-            
-            bw = edge.get('bandwidth', 100)
-            resource_cost += (1000.0 / bw)
+            data = self.G[u][v]
+            total_delay += data.get('delay', 0)
+            total_rel *= data.get('reliability', 1.0)
+            bw = data.get('bandwidth', 100)
+            total_bw_cost += (1000 / bw) if bw > 0 else 100
 
-        # 4. Toplam Ağırlıklı Maliyet
-        total_cost = (W_DELAY * total_delay) + \
-                     (W_RELIABILITY * total_rel_log) + \
-                     (W_RESOURCE * resource_cost)
-        
-        return total_cost
+        # Skor (Minimize edilmeli)
+        score = (total_delay * self.weights[0]) + \
+                ((1 - total_rel) * 1000 * self.weights[1]) + \
+                (total_bw_cost * self.weights[2])
+        return score
 
-    def generate_random_path(self):
-        """DFS tabanlı rastgele geçerli yol oluşturucu."""
-        path = [self.source]
-        current = self.source
-        visited = {self.source}
-        
-        while current != self.target:
-            neighbors = [n for n in self.G.neighbors(current) if n not in visited]
-            
-            if not neighbors: return None # Çıkmaz sokak
-            
-            # Hedef komşulardaysa oraya gitme şansını artır
-            if self.target in neighbors:
-                next_node = self.target
-            else:
-                next_node = random.choice(neighbors)
-            
-            path.append(next_node)
-            visited.add(next_node)
-            
-            # Çok uzun yolları engelle (Performans için limit: 250)
-            if len(path) > 250: return None
-            
-            current = next_node
-            
-        return path
-
-    def initialize_population(self):
-        """Başlangıç popülasyonunu oluşturur."""
-        self.population = []
-        
-        # En kısa yolu ekleyerek kaliteyi artır (Heuristic Seeding)
+    def solve(self, pop_size=30, generations=20):
+        population = []
         try:
-            sp = nx.shortest_path(self.G, self.source, self.target, weight='delay')
-            self.population.append((self.calculate_fitness(sp), sp))
+            # Farklı yollar bulmaya çalış
+            raw_paths = list(nx.shortest_simple_paths(self.G, self.src, self.dst, weight=None))
+            population = raw_paths[:pop_size]
         except:
-            pass 
+            return [] 
 
-        attempts = 0
-        max_attempts = POPULATION_SIZE * 10
-        
-        # Rastgele yollarla doldur
-        while len(self.population) < POPULATION_SIZE and attempts < max_attempts:
-            path = self.generate_random_path()
-            if path:
-                cost = self.calculate_fitness(path)
-                if cost != float('inf'):
-                    self.population.append((cost, path))
-            attempts += 1
-        
-        self.population.sort(key=lambda x: x[0])
+        if not population: return []
 
-    def crossover(self, parent1, parent2):
-        """Path-Based Crossover"""
-        common = list(set(parent1[1:-1]) & set(parent2[1:-1]))
-        if not common: return parent1
-        
-        pivot = random.choice(common)
-        idx1, idx2 = parent1.index(pivot), parent2.index(pivot)
-        
-        child = parent1[:idx1] + parent2[idx2:]
-        return child if len(child) == len(set(child)) else parent1
+        best_path = population[0]
+        best_score = self.calculate_fitness(best_path)
 
-    def mutate(self, path):
-        """Path Repair Mutation"""
-        if len(path) < 4: return path
-        
-        cut_point = random.randint(1, len(path)-2)
-        node = path[cut_point]
-        
-        partial_path = path[:cut_point+1]
-        current = node
-        visited = set(partial_path)
-        
-        for _ in range(50):
-            if current == self.target: return partial_path
+        for _ in range(generations):
+            population.sort(key=self.calculate_fitness)
             
-            neighbors = [n for n in self.G.neighbors(current) if n not in visited]
-            if not neighbors: return path
+            if self.calculate_fitness(population[0]) < best_score:
+                best_path = population[0]
+                best_score = self.calculate_fitness(best_path)
             
-            if self.target in neighbors:
-                current = self.target
-            else:
-                current = random.choice(neighbors)
+            survivors = population[:len(population)//2]
+            if len(survivors) > 1:
+                random.shuffle(survivors)
+            population = survivors
             
-            partial_path.append(current)
-            visited.add(current)
-            
-        return path
-
-    def run(self):
-        """Algoritmayı çalıştırır."""
-        self.initialize_population()
-        if not self.population: return None, float('inf')
-
-        for gen in range(GENERATIONS):
-            new_pop = []
-            new_pop.extend(self.population[:ELITISM_COUNT])
-            
-            while len(new_pop) < POPULATION_SIZE:
-                candidates = random.sample(self.population, min(5, len(self.population)))
-                parent1 = min(candidates, key=lambda x: x[0])[1]
-                
-                candidates = random.sample(self.population, min(5, len(self.population)))
-                parent2 = min(candidates, key=lambda x: x[0])[1]
-                
-                child = self.crossover(parent1, parent2)
-                
-                if random.random() < MUTATION_RATE:
-                    child = self.mutate(child)
-                
-                cost = self.calculate_fitness(child)
-                if cost != float('inf'):
-                    new_pop.append((cost, child))
-            
-            self.population = sorted(new_pop, key=lambda x: x[0])
-            
-        best_solution = self.population[0]
-        return best_solution[1], best_solution[0]
-
-# =============================================================================
-# 4. GITHUB VE TEST UYUMLULUĞU İÇİN WRAPPER FONKSİYON
-# =============================================================================
-def find_ga_path(G, src=None, dst=None, demand=0, seed=None, **kwargs):
-    """
-    Bu fonksiyon GitHub testlerinin kodumuzu çağırabilmesi için güncellenmiştir.
-    Hem 'src/dst' hem de testlerin kullandığı 'start/goal' parametrelerini destekler.
-    Ayrıca seed ayarı yapar ve testlerin beklediği 3'lü çıktıyı verir.
-    """
-    
-    # 1. Alias (Takma Ad) Yönetimi: Testler 'start' ve 'goal' kullanıyor olabilir
-    if src is None:
-        src = kwargs.get('start')
-    if dst is None:
-        dst = kwargs.get('goal')
-        
-    if src is None or dst is None:
-        # Eğer hala None ise, hata vermek yerine boş dönelim (test çökmemesi için)
-        return None, float('inf'), {}
-
-    # 2. Seed Ayarı: Testler deterministik sonuç için seed gönderiyor
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-        
-    # 3. Algoritmayı Çalıştır
-    # demand verilmemişse varsayılan 0 olarak gider
-    ga = GeneticAlgorithmRouter(G, src, dst, demand)
-    path, cost = ga.run()
-    
-    # 4. Dönüş Değeri: Testler (path, cost, metrics) bekliyor
-    # Bizim metrics hesaplamamız olmadığı için boş sözlük {} dönüyoruz.
-    metrics = {} 
-    
-    return path, cost, metrics
-
-# =============================================================================
-# 5. ANA ÇALIŞTIRMA VE RAPORLAMA BLOĞU
-# =============================================================================
-if __name__ == "__main__":
-    G, df_demand = load_data()
-    
-    if G is not None:
-        experiment_results = []
-        
-        print("\n" + "="*80)
-        print(f"DENEY BAŞLIYOR: Toplam {len(df_demand)} Senaryo, Her biri {REPETITIONS} tekrar.")
-        print("="*80 + "\n")
-        
-        total_scenarios = len(df_demand)
-        
-        for idx, row in df_demand.iterrows():
-            src = int(row['src'])
-            dst = int(row['dst'])
-            demand = row['demand_mbps']
-            
-            scenario_costs = []
-            scenario_times = []
-            best_path_str = "Yok"
-            
-            print(f"[{idx+1}/{total_scenarios}] Senaryo: {src} -> {dst} ({demand} Mbps) işleniyor...")
-            
-            for rep in range(REPETITIONS):
-                start_time = time.time()
-                
-                ga = GeneticAlgorithmRouter(G, src, dst, demand)
-                path, cost = ga.run()
-                
-                duration = time.time() - start_time
-                
-                if path:
-                    scenario_costs.append(cost)
-                    scenario_times.append(duration)
-                    if cost == min(scenario_costs):
-                        best_path_str = str(path)
-                else:
-                    scenario_costs.append(float('inf'))
-                    scenario_times.append(duration)
-
-            # --- İstatistikleri Hesapla ---
-            valid_costs = [c for c in scenario_costs if c != float('inf')]
-            
-            if valid_costs:
-                mean_val = np.mean(valid_costs)
-                std_val = np.std(valid_costs)
-                best_val = np.min(valid_costs)
-                worst_val = np.max(valid_costs)
-                avg_time = np.mean(scenario_times)
-                status = "SUCCESS"
-            else:
-                mean_val = std_val = best_val = worst_val = avg_time = 0
-                status = "FAIL"
-            # Sonuçları listeye ekle
-            experiment_results.append({
-                "Scenario_ID": idx + 1,
-                "Source": src,
-                "Destination": dst,
-                "Demand_Mbps": demand,
-                "Status": status,
-                "Mean_Cost": round(mean_val, 4),
-                "Std_Dev": round(std_val, 4),
-                "Best_Cost": round(best_val, 4),
-                "Worst_Cost": round(worst_val, 4),
-                "Avg_Time_Sec": round(avg_time, 4),
-                "Best_Path_Found": best_path_str
-            })
-            # Anlık Bilgi Bas
-            if status == "SUCCESS":
-                print(f"   >>> Tamamlandı. En İyi Maliyet: {best_val:.4f}, Ort. Süre: {avg_time:.3f}s")
-            else:
-                print(f"   >>> BAŞARISIZ (Yol Bulunamadı)")
-        # --- CSV'ye Kaydet ---
-        output_file = "Genetik_Algoritma_Sonuclar.csv"
-        df_res = pd.DataFrame(experiment_results)
-        df_res.to_csv(output_file, sep=';', index=False)
-        
-        print("\n" + "="*80)
-        print(f"TÜM İŞLEMLER BİTTİ. Sonuçlar '{output_file}' dosyasına kaydedildi.")
-        print("="*80)
+        return best_path
