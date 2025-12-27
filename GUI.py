@@ -125,6 +125,7 @@ class RoutingWorker(QThread):
         start_time = time.time()
         
         optimizer = None
+        # ... (Algoritma seçim kısımları aynı kalacak) ...
         if name == "GA":
             optimizer = GeneticOptimizer(self.manager, self.src, self.dst, self.bw_demand)
         elif name == "RL":
@@ -140,6 +141,16 @@ class RoutingWorker(QThread):
             path, cost, metrics = [], 0, {}
 
         end_time = time.time()
+        
+        # --- EKLEDİĞİMİZ KISIM BAŞLANGIÇ ---
+        # Eğer path boşsa, başarı durumunu False yap ve maliyeti sonsuz yap (ki en iyi seçilmesin)
+        if not path:
+            metrics['success'] = False
+            metrics['total_cost'] = float('inf') # Başarısızsa maliyet çok yüksek olsun
+        else:
+            metrics['success'] = True
+        # --- EKLEDİĞİMİZ KISIM BİTİŞ ---
+
         metrics['time_ms'] = (end_time - start_time) * 1000
         return path, cost, metrics
 
@@ -465,19 +476,38 @@ class ComparisonCanvas(FigureCanvas):
         algos = list(results.keys())
         bar_colors = ["#22d3ee", "#818cf8", "#34d399", "#f472b6"][:len(algos)]
 
-        costs = [results[a].get('total_cost', 0) for a in algos]
-        times = [results[a].get('time_ms', 0) for a in algos]
-        delays = [results[a].get('delay', 0) for a in algos]
-        rels = [results[a].get('rel_prob', 0) for a in algos]
+        # Başarısız olanların değerlerini grafikte göstermek istemiyoruz (0 veya nan yapalım)
+        # Ancak etiket (label) olarak "Fail" yazdıracağız.
+        
+        costs = []
+        times = []
+        delays = []
+        rels = []
+        labels = [] # Her çubuğun tepesine ne yazılacak?
 
-        self._plot_bar(self.axs[0, 0], algos, costs, bar_colors, "Amaç Fonksiyonu (Düşük İyi)", "Maliyet")
-        self._plot_bar(self.axs[0, 1], algos, times, bar_colors, "Hesaplama Süresi", "ms")
-        self._plot_bar(self.axs[1, 0], algos, delays, bar_colors, "Toplam Gecikme", "ms")
-        self._plot_bar(self.axs[1, 1], algos, rels, bar_colors, "Güvenilirlik Oranı", "(0-1)")
+        for a in algos:
+            m = results[a]
+            if m.get('success', False):
+                costs.append(m.get('total_cost', 0))
+                times.append(m.get('time_ms', 0))
+                delays.append(m.get('delay', 0))
+                rels.append(m.get('rel_prob', 0))
+                labels.append(None) # None ise sayıyı yazdırır
+            else:
+                costs.append(0) # Çubuk çizilmesin diye 0
+                times.append(m.get('time_ms', 0)) # Süreyi yine de gösterebiliriz (ne kadar sürede pes etti?)
+                delays.append(0)
+                rels.append(0)
+                labels.append("X") # Çubuğun tepesine X koy
+
+        self._plot_bar(self.axs[0, 0], algos, costs, bar_colors, "Amaç Fonksiyonu (Düşük İyi)", "Maliyet", labels)
+        self._plot_bar(self.axs[0, 1], algos, times, bar_colors, "Hesaplama Süresi", "ms", [None]*4) # Sürede X yazmasın
+        self._plot_bar(self.axs[1, 0], algos, delays, bar_colors, "Toplam Gecikme", "ms", labels)
+        self._plot_bar(self.axs[1, 1], algos, rels, bar_colors, "Güvenilirlik Oranı", "(0-1)", labels)
 
         self.draw_idle()
 
-    def _plot_bar(self, ax, x, y, c, title, ylabel):
+    def _plot_bar(self, ax, x, y, c, title, ylabel, custom_labels=None):
         ax.clear()
         ax.set_facecolor(THEME["GRAPH_BG"])
         bars = ax.bar(x, y, color=c, width=0.5, zorder=3)
@@ -487,10 +517,20 @@ class ComparisonCanvas(FigureCanvas):
         ax.tick_params(axis='y', colors='#9ca3af', labelsize=8)
         ax.grid(axis='y', linestyle='--', alpha=0.2, color='white', zorder=0)
         
-        for bar in bars:
+        # Çubuk üstü yazıları
+        for i, bar in enumerate(bars):
             height = bar.get_height()
+            
+            # Eğer özel etiket varsa (X gibi) onu yaz, yoksa sayıyı yaz
+            if custom_labels and custom_labels[i] is not None:
+                text_val = custom_labels[i]
+                text_color = "#ef4444" # Kırmızı X
+            else:
+                text_val = f'{height:.2f}'
+                text_color = "white"
+
             ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}', ha='center', va='bottom', color='white', fontsize=7)
+                    text_val, ha='center', va='bottom', color=text_color, fontsize=7, fontweight='bold')
 
         for spine in ax.spines.values(): spine.set_edgecolor('#374151')
         ax.spines['top'].set_visible(False)
@@ -752,19 +792,43 @@ class Window(QtWidgets.QWidget):
     def on_batch_done(self, results):
         self.btn_compare.setText("TÜMÜNÜ KIYASLA"); self.btn_compare.setEnabled(True)
         
-        best_algo = min(results, key=lambda k: results[k].get("total_cost", float('inf'))) if results else "-"
+        # Sadece BAŞARILI olanlar arasından en düşüğünü bul
+        successful_results = {k: v for k, v in results.items() if v.get('success', False)}
+        
+        if successful_results:
+            best_algo = min(successful_results, key=lambda k: successful_results[k].get("total_cost", float('inf')))
+        else:
+            best_algo = "Yok (Hepsi Başarısız)"
         
         html = f"<div><h2 style='color:#60a5fa;'>KIYASLAMA BİTTİ</h2>"
         html += f"<p><b>En İyi:</b> <span style='color:#22c55e; font-size:18px;'>{best_algo}</span></p>"
         
+        # Listeyi yine maliyete göre sırala (Sonsuz olanlar sona düşer)
         ordered = sorted(results.items(), key=lambda kv: kv[1].get("total_cost", float("inf")))
+        
         for algo, m in ordered:
+            is_success = m.get('success', False)
+            
+            # Başarı durumuna göre renk ve metin ayarla
+            if is_success:
+                status_html = f"""
+                <span style="color:#cbd5f5;">Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br>
+                <span style="color:#cbd5f5;">Maliyet: <b>{m.get('total_cost',0):.4f}</b></span>
+                """
+                algo_color = "#93c5fd" # Mavi
+            else:
+                status_html = f"""
+                <span style="color:#ef4444; font-weight:bold;">BAŞARISIZ (Yol Bulunamadı)</span><br>
+                <span style="color:#64748b;">Kriterlere uygun rota yok.</span>
+                """
+                algo_color = "#ef4444" # Kırmızı
+
             html += f"""
             <div style="margin-top:10px; border-bottom:1px solid #374151; padding-bottom:5px;">
-            <b style="color:#93c5fd;">▶ {algo}</b><br>
-            <span style="color:#cbd5f5;">Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br>
-            <span style="color:#cbd5f5;">Maliyet: <b>{m.get('total_cost',0):.4f}</b></span>
+            <b style="color:{algo_color};">▶ {algo}</b><br>
+            {status_html}
             </div>"""
+            
         html += "</div>"
         self.path_box.setHtml(html)
         self.canvas_perf.update_charts(results)
