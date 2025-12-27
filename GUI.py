@@ -68,6 +68,15 @@ THEME = {
 # ==========================================================
 #  YARDIMCI FONKSİYONLAR
 # ==========================================================
+def clean_cost_value(val):
+    """
+    Maliyet 1.000.000 üzerindeyse (ceza puanı varsa) bunu temizler.
+    Böylece raporlarda ve grafiklerde saf maliyet görünür.
+    """
+    if val > 1000000:
+        return val - 1000000
+    return val
+
 def dist_point_to_segment(px, py, x1, y1, x2, y2):
     l2 = (x1 - x2)**2 + (y1 - y2)**2
     if l2 == 0: return math.hypot(px - x1, py - y1)
@@ -205,6 +214,22 @@ class BatchTestWorker(QThread):
 
         for i, sc in enumerate(scenarios_to_run):
             src, dst, bw = sc['src'], sc['dst'], sc['bw']
+            # --- YOL KONTROLÜ ---
+            # Eğer fiziksel olarak yol yoksa, boşuna 4 algoritmayı yorma.
+            if not nx.has_path(self.manager.G, src, dst):
+                # Rapora direkt "YOL YOK" yazıp geç
+                for algo_name in self.algorithms:
+                     row = {
+                        "Senaryo": i + 1,
+                        "Kaynak": src, "Hedef": dst, "Bant_Gen": bw,
+                        "Algoritma": algo_name,
+                        "Basari": "0/5", "Durum": "BAŞARISIZ",
+                        "Ort_Maliyet": "0.00", "Std_Sapma": "0.00",
+                        "En_Iyi": "0.00", "En_Kotu": "0.00", "Ort_Sure_ms": "0.00",
+                        "Not": "Topolojik Yol Yok (Unreachable)"
+                    }
+                     full_report.append(row)
+                continue # Bir sonraki senaryoya atla
             
             for algo_name in self.algorithms:
                 costs = []
@@ -232,10 +257,15 @@ class BatchTestWorker(QThread):
                         success_count += 1
                     
                 if success_count > 0:
-                    avg_cost = statistics.mean(costs)
-                    std_dev = statistics.stdev(costs) if len(costs) > 1 else 0.0
-                    best_cost = min(costs)
-                    worst_cost = max(costs)
+                    # --- Maliyetleri temizle ---
+                    cleaned_costs = [clean_cost_value(c) for c in costs]
+                    
+                    avg_cost = statistics.mean(cleaned_costs)
+                    # Standart sapma temizlenmiş veriden hesaplanır
+                    std_dev = statistics.stdev(cleaned_costs) if len(cleaned_costs) > 1 else 0.0
+                    best_cost = min(cleaned_costs)
+                    worst_cost = max(cleaned_costs)
+                    
                     avg_time = statistics.mean(times)
                     status = "BAŞARILI"
                     reason = "-"
@@ -252,7 +282,7 @@ class BatchTestWorker(QThread):
                     "Algoritma": algo_name,
                     "Basari": f"{success_count}/{self.repetitions}",
                     "Ort_Maliyet": f"{avg_cost:.2f}",
-                    "Std_Sapma": f"{std_dev:.2f}",
+                    "Std_Sapma": f"{std_dev:.4f}", # Hassasiyet artırıldı
                     "En_Iyi": f"{best_cost:.2f}",
                     "En_Kotu": f"{worst_cost:.2f}",
                     "Ort_Sure_ms": f"{avg_time:.2f}",
@@ -504,7 +534,12 @@ class ComparisonCanvas(FigureCanvas):
         for a in algos:
             m = results[a]
             if m.get('success', False):
-                costs.append(m.get('total_cost', 0)); times.append(m.get('time_ms', 0))
+                # --- Grafiklere Temiz Maliyeti Bas ---
+                raw_c = m.get('total_cost', 0)
+                clean_c = clean_cost_value(raw_c)
+                
+                costs.append(clean_c)
+                times.append(m.get('time_ms', 0))
                 delays.append(m.get('delay', 0)); rels.append(m.get('rel_prob', 0)); labels.append(None)
             else:
                 costs.append(0); times.append(m.get('time_ms', 0)); delays.append(0); rels.append(0); labels.append("X")
@@ -718,10 +753,18 @@ class Window(QtWidgets.QWidget):
         self.algo_pill.setText(self.algo_combo.currentText())
         path_str = " -> ".join(map(str, path)) if path else "YOL BULUNAMADI"
         self.lbl_path_nodes.setText(path_str); self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(-)")
-        self.val_delay.setText(f"{metrics.get('delay',0):.2f} ms"); self.val_rel.setText(f"{metrics.get('rel_prob',0):.4f}")
-        self.val_res.setText(f"{metrics.get('res_cost',0):.2f}"); self.val_total.setText(f"{metrics.get('total_cost', cost):.4f}")
+        
+        # --- Temiz maliyeti göster ---
+        raw_cost = metrics.get('total_cost', cost)
+        display_cost = clean_cost_value(raw_cost)
+
+        self.val_delay.setText(f"{metrics.get('delay',0):.2f} ms")
+        self.val_rel.setText(f"{metrics.get('rel_prob',0):.4f}")
+        self.val_res.setText(f"{metrics.get('res_cost',0):.2f}")
+        self.val_total.setText(f"{display_cost:.4f}")
+
         self.lbl_time_val.setText(f"{metrics.get('time_ms',0):.2f} ms")
-        log = f"ALGORİTMA: {self.algo_combo.currentText()}\nTalep: {getattr(self, 'current_bw_demand', 0)} Mbps\nDurum: {'BAŞARILI' if path else 'BAŞARISIZ'}\nMaliyet: {metrics.get('total_cost', cost)}\nRota: {path_str}"
+        log = f"ALGORİTMA: {self.algo_combo.currentText()}\nTalep: {getattr(self, 'current_bw_demand', 0)} Mbps\nDurum: {'BAŞARILI' if path else 'BAŞARISIZ'}\nMaliyet: {display_cost:.4f}\nRota: {path_str}"
         self.path_box.setPlainText(log)
 
     def run_compare(self):
@@ -740,7 +783,11 @@ class Window(QtWidgets.QWidget):
         html = f"<div><h2 style='color:#60a5fa;'>KIYASLAMA BİTTİ</h2><p><b>En İyi:</b> <span style='color:#22c55e; font-size:18px;'>{best}</span></p>"
         ordered = sorted(results.items(), key=lambda kv: kv[1].get("total_cost", float("inf")))
         for algo, m in ordered:
-            status_html = f"<span style='color:#cbd5f5;'>Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br><span style='color:#cbd5f5;'>Maliyet: <b>{m.get('total_cost',0):.4f}</b></span>" if m.get('success') else "<span style='color:#ef4444; font-weight:bold;'>BAŞARISIZ</span>"
+            # ---  Kıyaslama Raporunda Temiz Maliyet ---
+            raw_c = m.get('total_cost', 0)
+            disp_c = clean_cost_value(raw_c)
+
+            status_html = f"<span style='color:#cbd5f5;'>Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br><span style='color:#cbd5f5;'>Maliyet: <b>{disp_c:.4f}</b></span>" if m.get('success') else "<span style='color:#ef4444; font-weight:bold;'>BAŞARISIZ</span>"
             color = "#93c5fd" if m.get('success') else "#ef4444"
             html += f"<div style='margin-top:10px; border-bottom:1px solid #374151; padding-bottom:5px;'><b style='color:{color};'>▶ {algo}</b><br>{status_html}</div>"
         html += "</div>"
