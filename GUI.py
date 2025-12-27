@@ -3,8 +3,8 @@ import time
 import math
 import random
 import os
-
 import PyQt5
+
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QCursor
