@@ -6,177 +6,146 @@ import networkx as nx
 class SAOptimizer:
     """
     QoS Odaklı Rotalama için Simulated Annealing (Benzetimli Tavlama) Algoritması.
-    
-    Bu sınıf, termodinamikteki tavlama işleminden esinlenerek, arama uzayında 
-    global minimumu bulmaya çalışır. Yüksek sıcaklıklarda kötü çözümleri kabul etme 
-    olasılığı (Metropolis kriteri) sayesinde yerel tuzaklardan kurtulur.
-    
-    Temel Bileşenler:
-    - Energy (Enerji): Yolun maliyeti (Cost).
-    - Temperature (Sıcaklık): Kabul olasılığını kontrol eden parametre.
-    - Cooling Schedule (Soğutma): Sıcaklığın zamanla düşürülmesi.
+    Bu algoritma, metalurjideki tavlama işleminden esinlenerek karmaşık ağlarda 
+    en uygun (minimum maliyetli) yolu bulmaya çalışır.
     """
 
     def __init__(self, manager, src, dst, bw_demand):
         """
-        SA Optimizer Başlatıcı.
-        
-        Args:
-            manager (NetworkManager): Ağ topolojisi ve maliyet hesaplayıcı.
-            src (int): Kaynak düğüm ID.
-            dst (int): Hedef düğüm ID.
-            bw_demand (float): Talep edilen bant genişliği (Mbps).
+        Algoritmanın temel değişkenlerini ve ağ parametrelerini hazırlar.
         """
-        self.manager = manager
-        self.src = src
-        self.dst = dst
-        self.bw_demand = bw_demand
+        self.manager = manager      # Ağ topolojisini yöneten nesne (G grafını içerir)
+        self.src = src              # Kaynak düğüm (başlangıç)
+        self.dst = dst              # Hedef düğüm (bitiş)
+        self.bw_demand = bw_demand  # Talep edilen minimum bant genişliği
 
-        # --- SA Parametreleri (Cooling Schedule) ---
-        self.initial_temp = 500.0     # Başlangıç sıcaklığı (T0)
-        self.final_temp = 0.1         # Minimum sıcaklık (Tmin)
-        self.alpha = 0.95             # Soğuma katsayısı (Geometric cooling)
-        self.max_iterations = 800     # Maksimum iterasyon sayısı
-        self.stagnation_limit = 50    # İyileşme olmazsa durma limiti
-        self.max_hop_limit = 15       # Maksimum hop (sekme) sayısı
+        # --- SA Parametreleri (Soğutma Çizelgesi) ---
+        self.initial_temp = 500.0     # T0: Başlangıç sıcaklığı (Yüksek olması daha fazla rastgeleliğe izin verir)
+        self.final_temp = 0.1         # Tmin: Durma sıcaklığı (Sistem bu dereceye kadar soğutulur)
+        self.alpha = 0.95             # Soğuma katsayısı (Sıcaklık her adımda %5 oranında düşer)
+        self.max_iterations = 800     # Toplamda yapılacak maksimum deneme sayısı
+        self.stagnation_limit = 50    # İyileşme olmazsa algoritmayı erken sonlandırmak için limit
+        self.max_hop_limit = 15       # Yolun çok uzamasını engellemek için maksimum sekme sınırı
 
     def _evaluate(self, path, weights):
         """
-        Bir yolun enerjisini (maliyetini) hesaplar.
+        Bir yolun kalitesini (enerjisini) ölçer. 
+        Maliyet ne kadar düşükse yol o kadar iyidir.
         """
         if not path:
-            return float('inf'), {}
-        # NetworkManager üzerinden merkezi maliyet hesabı
+            return float('inf'), {} # Yol yoksa sonsuz maliyet döndür
+        # NetworkManager aracılığıyla gecikme, jitter ve kayıp bazlı maliyeti hesapla
         return self.manager.calculate_path_cost(path, weights, self.bw_demand)
 
     def _generate_initial_solution(self):
         """
-        Başlangıç çözümü üretir (Hybrid Approach).
-        Önce heuristic (Shortest Path) dener, başarısız olursa Random Walk yapar.
+        Arama işlemine başlamak için ilk geçerli yolu bulur (Hibrit Yaklaşım).
         """
-        # 1. Deneme: Heuristic (En kısa yol - Hop bazlı)
+        # 1. Aşama: Sezgisel (Heuristic) yaklaşım denemesi
         try:
-            # Bant genişliği kısıtını sağlayan kenarları içeren bir alt grafikte ara
+            # Sadece bant genişliği yeterli olan kenarları filtrele
             valid_edges = [
                 (u, v) for u, v, d in self.manager.G.edges(data=True)
                 if d.get('bandwidth', 0) >= self.bw_demand
             ]
+            # Filtrelenmiş kenarlarla geçici bir alt grafik oluştur
             temp_G = self.manager.G.edge_subgraph(valid_edges)
             
+            # Eğer kaynak ve hedef arasında bir yol varsa en kısa olanı al
             if nx.has_path(temp_G, self.src, self.dst):
                 path = nx.shortest_path(temp_G, self.src, self.dst)
+                # Hop limiti içindeyse bu yolu başlangıç çözümü kabul et
                 if len(path) <= self.max_hop_limit:
                     return path
         except:
-            pass # Heuristic başarısız, random dene
+            pass # Heuristic bulunamazsa rastgele yürüyüşe geç
 
-        # 2. Deneme: Random Walk (DFS-based with constraints)
-        for _ in range(20): # 20 kez dene
+        # 2. Aşama: Rastgele Yürüyüş (Random Walk) - 20 kez dene
+        for _ in range(20):
             path = [self.src]
             visited = {self.src}
             curr = self.src
             
             while curr != self.dst:
                 neighbors = list(self.manager.G.neighbors(curr))
-                # Cycle yaratmayan ve tercihen BW uygun komşular
+                # Bant genişliği uyan ve döngü (cycle) oluşturmayan komşuları bul
                 valid_neighbors = [
                     n for n in neighbors 
                     if n not in visited and 
                     self.manager.G[curr][n].get('bandwidth', 0) >= self.bw_demand
                 ]
                 
-                # Eğer sıkı kısıtla bulunamazsa, sadece visited kontrolü yap (Cost fonksiyonu cezayı halleder)
+                # Sıkı kısıtla komşu bulunamazsa, en azından ziyaret edilmemiş olanlara bak
                 if not valid_neighbors:
                     valid_neighbors = [n for n in neighbors if n not in visited]
                 
-                if not valid_neighbors: break # Dead end
+                if not valid_neighbors: break # Çıkmaz sokak
                 
+                # Rastgele bir komşu seç ve ilerle
                 next_node = random.choice(valid_neighbors)
                 path.append(next_node)
                 visited.add(next_node)
                 curr = next_node
                 
-                if len(path) > self.max_hop_limit: break
+                if len(path) > self.max_hop_limit: break # Limit aşılırsa iptal et
             
-            if curr == self.dst:
+            if curr == self.dst: # Hedefe ulaşıldıysa yolu döndür
                 return path
         
-        return None # Geçerli yol üretilemedi
+        return None # Hiçbir şekilde yol bulunamadı
 
     def _generate_neighbor(self, current_path):
         """
-        Mevcut çözümden bir komşu çözüm türetir.
-        İki strateji kullanır:
-        1. Node Replacement: Yolun ortasındaki bir düğümü değiştir.
-        2. Subpath Reconstruction: Yolu kes ve yeniden bağla.
+        Mevcut yolda küçük değişiklikler yaparak yeni bir 'komşu' yol türetir.
         """
         if len(current_path) < 3:
-            return list(current_path) # Değiştirilemez
+            return list(current_path) # Değiştirilecek orta düğüm yoksa aynı yolu dön
 
         new_path = list(current_path)
-        strategy = random.choice(['swap', 'rebuild'])
+        strategy = random.choice(['swap', 'rebuild']) # Değiştirme mi yoksa yeniden inşa mı?
 
         if strategy == 'swap':
-            # --- Yöntem 1: Node Replacement ---
-            # Başlangıç ve bitiş hariç bir düğüm seç
-            idx = random.randint(1, len(new_path) - 2)
+            # --- Yöntem 1: Düğüm Değiştirme (Swap) ---
+            idx = random.randint(1, len(new_path) - 2) # Baş ve son hariç bir nokta seç
             prev_node = new_path[idx-1]
             next_node = new_path[idx+1]
             
-            # prev ve next'in ortak komşularını bul (mevcut düğüm hariç)
-            # Bu, yolun kopmamasını garanti eder.
+            # Önceki ve sonraki düğümlerin ortak komşularını bul (yol kopmasın diye)
             common = list(
                 set(self.manager.G.neighbors(prev_node)) & 
                 set(self.manager.G.neighbors(next_node))
             )
-            # Cycle oluşturmayacak adayları filtrele
+            # Mevcut yolda zaten bulunmayan adayları filtrele
             candidates = [n for n in common if n not in new_path]
             
             if candidates:
-                new_path[idx] = random.choice(candidates)
+                new_path[idx] = random.choice(candidates) # Rastgele biriyle değiştir
                 return new_path
 
-        # --- Yöntem 2: Subpath Reconstruction (veya Swap başarısızsa) ---
-        # Yolun bir noktasından kopar ve hedefe tekrar gitmeye çalış
-        cut_idx = random.randint(1, len(new_path) - 2)
-        prefix = new_path[:cut_idx+1] # Kesilen noktaya kadar al
+        # --- Yöntem 2: Alt Yol İnşası (Rebuild) ---
+        cut_idx = random.randint(1, len(new_path) - 2) # Yolu ortadan bir yerden kes
+        prefix = new_path[:cut_idx+1] # Kesilen yere kadar olan kısmı koru
         curr = prefix[-1]
         
-        # Basit bir Greedy/Random DFS ile tamamla
-        temp_visited = set(prefix)
-        remaining_hops = self.max_hop_limit - len(prefix)
-        
-        segment = []
-        found = False
-        
-        # Küçük bir arama yap
-        search_queue = [[curr]]
-        # Basit BFS mantığı ile kısa bir tamamlama yolu ara
-        # (BFS, SA'nın lokal arama doğasına uygundur)
-        
-        depth_limit = 5 # Çok uzağa gitme, lokal değişim olsun
-        
-        path_found = None
-        
-        # BFS ile reconstruction denemesi
+        # Kesilen noktadan hedefe BFS (Genişlik Öncelikli Arama) ile kısa bir yol ara
         queue = [(curr, [curr])]
         visited_local = {curr}
+        temp_visited = set(prefix)
+        depth_limit = 5 # Çok uzağa sapmadan lokal bir değişim yap
+        path_found = None
         
         iterations = 0
-        while queue and iterations < 50: # Sonsuz döngü koruması
+        while queue and iterations < 50:
             node, p = queue.pop(0)
             iterations += 1
-            
             if len(p) > depth_limit: continue
             
-            if node == self.dst:
-                # Orijinal prefix ile birleştir (p[1:] çünkü curr zaten prefixte var)
+            if node == self.dst: # Hedef bulunursa prefix ile birleştir
                 path_found = prefix + p[1:]
                 break
             
             neighbors = list(self.manager.G.neighbors(node))
-            random.shuffle(neighbors) # Stokastik yapı
-            
+            random.shuffle(neighbors) # Çeşitlilik için komşuları karıştır
             for n in neighbors:
                 if n not in temp_visited and n not in visited_local:
                     visited_local.add(n)
@@ -185,85 +154,82 @@ class SAOptimizer:
         if path_found and len(path_found) <= self.max_hop_limit:
             return path_found
 
-        # Eğer değişiklik yapılamadıysa veya geçersizse eski yolu döndür
-        return list(current_path)
+        return list(current_path) # Yeni yol üretilemezse orijinali dön
 
     def solve(self, weights):
         """
-        Simulated Annealing ana döngüsü.
-        
-        Returns:
-            best_path, best_cost, metrics
+        Simulated Annealing algoritmasını çalıştıran ana motor.
         """
-        # 1. Başlangıç Çözümü
+        # 1. Başlangıç çözümünü oluştur
         current_path = self._generate_initial_solution()
-        
-        # Eğer hiç yol yoksa
         if not current_path:
-            return [], 0.0, {}
+            return [], 0.0, {} # Yol bulunamazsa boş dön
 
+        # İlk çözümün maliyetini hesapla
         current_cost, current_metrics = self._evaluate(current_path, weights)
         
-        # Global Best Takibi
+        # En iyi çözümü takip etmek için değişkenleri ilklendir
         best_path = list(current_path)
         best_cost = current_cost
         best_metrics = current_metrics
         
-        # 2. Tavlama Döngüsü
+        # 2. Tavlama (Döngü) Başlangıcı
         T = self.initial_temp
         iteration = 0
         stagnation_counter = 0
 
+        # Sistem soğuyana veya max iterasyona ulaşana kadar dön
         while T > self.final_temp and iteration < self.max_iterations:
-            # A. Komşu Üretimi
+            # A. Mevcut yola komşu yeni bir yol üret
             neighbor_path = self._generate_neighbor(current_path)
             
-            # B. Enerji (Maliyet) Hesabı
+            # B. Yeni yolun maliyetini hesapla
             neighbor_cost, neighbor_metrics = self._evaluate(neighbor_path, weights)
             
-            # C. Delta Enerji
+            # C. Enerji farkını (maliyet farkını) hesapla
             delta_E = neighbor_cost - current_cost
             
-            # D. Kabul Kriteri (Metropolis)
+            # D. Kabul Kriteri (Metropolis Algoritması)
             accepted = False
             if delta_E < 0:
-                # İyileşme varsa her zaman kabul et
+                # Yeni yol daha iyiyse doğrudan kabul et
                 accepted = True
             else:
-                # Kötüleşme varsa olasılıksal kabul et: P = exp(-delta / T)
-                # T yüksekken kabul ihtimali yüksek, T düştükçe azalır.
+                # Yeni yol daha kötüyse, sıcaklığa bağlı bir olasılıkla kabul et
+                # Bu adım 'yerel minimum' tuzaklarından kurtulmayı sağlar.
                 try:
-                    prob = math.exp(-delta_E / T)
+                    prob = math.exp(-delta_E / T) # Kabul olasılığı formülü
                 except OverflowError:
                     prob = 0
                 
                 if random.random() < prob:
                     accepted = True
             
-            # E. Güncelleme
+            # E. Eğer yeni çözüm kabul edildiyse güncelle
             if accepted:
                 current_path = neighbor_path
                 current_cost = neighbor_cost
                 current_metrics = neighbor_metrics
                 
-                # Global Best Kontrolü
+                # Eğer bu yeni yol şimdiye kadar bulunan en iyi yolsa kaydet
                 if current_cost < best_cost:
                     best_path = list(current_path)
                     best_cost = current_cost
                     best_metrics = current_metrics
-                    stagnation_counter = 0 # İyileşme var
+                    stagnation_counter = 0 # İyileşme olduğu için sayacı sıfırla
                 else:
                     stagnation_counter += 1
             else:
                 stagnation_counter += 1
             
-            # F. Soğutma (Cooling Schedule)
+            # F. Sıcaklığı düşür (Sistem soğuyor)
             T *= self.alpha
             iteration += 1
             
             # G. Erken Durdurma (Stagnation)
-            # Eğer uzun süre (örn. 50 iterasyon) iyileşme olmadıysa ve sıcaklık zaten düşükse dur.
+            # Sıcaklık iyice düştüyse ve uzun süredir iyileşme yoksa aramayı bitir
             if stagnation_counter > self.stagnation_limit and T < (self.initial_temp * 0.1):
                 break
 
+        # Bulunan en iyi yolu, maliyeti ve metrikleri döndür
         return best_path, best_cost, best_metrics
