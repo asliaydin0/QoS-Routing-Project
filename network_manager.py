@@ -81,7 +81,7 @@ class NetworkManager:
             node_data = self.G.nodes[node]
             total_delay += node_data.get('processing_delay', 0)
             r = node_data.get('reliability', 1.0)
-            rel_cost_log += -math.log(r) if r > 0 else 100
+            rel_cost_   log += -math.log(r) if r > 0 else 100
 
         # --- 2. Bağlantı Maliyetleri ---
         min_path_bw = float('inf') # Yol üzerindeki darboğaz bant genişliği
