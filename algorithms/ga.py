@@ -9,17 +9,24 @@ class GeneticOptimizer:
         self.dst = dst
         self.bw_demand = bw_demand
         
-        # --- Parametreler (Varyasyon için ayarlandı) ---
+        # --- Parametreler ---
         self.pop_size = 40          
         self.max_generations = 50   
-        self.base_mutation_rate = 0.30  # Mutasyon oranı artırıldı (Çeşitlilik için)
-        self.mutation_rate = self.base_mutation_rate 
+        self.mutation_rate = 0.30 
         self.crossover_rate = 0.70
-        self.elitism_count = 2      # Elitizm azaltıldı (En iyiyi hep korumasın, bazen kaybetsin)
+        self.elitism_count = 2      
         self.tournament_size = 3    
         self.max_hop_limit = 20     
-        self.stagnation_limit = 10   
-        
+        self.stagnation_limit = 12   
+
+        # --- GÜVENLİ OPTİMİZASYON ---
+        self.dist_map = {}
+        try:
+            # Hedefe olan uzaklıkları hesapla (İpucu olarak)
+            self.dist_map = dict(nx.single_source_shortest_path_length(self.manager.G, self.dst))
+        except:
+            self.dist_map = {}
+
     def _generate_random_path(self, max_attempts=50):
         for _ in range(max_attempts):
             path = [self.src]
@@ -27,25 +34,26 @@ class GeneticOptimizer:
             visited = {self.src}
 
             while curr != self.dst:
-                neighbors = list(self.manager.G.neighbors(curr))
+                try:
+                    neighbors = list(self.manager.G.neighbors(curr))
+                except:
+                    break 
+                
                 candidates = [n for n in neighbors if n not in visited]
 
                 if not candidates: break
 
                 # --- AKILLI SEÇİM ---
-                # Rastgele değil, hedefe yakın olana gitme ihtimalini artır
-                # Epsilon-Greedy benzeri: %70 akıllı, %30 rastgele (çeşitlilik için)
-                if random.random() < 0.7:
-                    # Hedefe en yakın olan komşuyu seç (NetworkX shortest_path_length ile)
-                    try:
-                        candidates.sort(key=lambda n: nx.shortest_path_length(self.manager.G, n, self.dst))
-                        # En iyi 2 adaydan birini seç
-                        next_node = candidates[0] if len(candidates)==1 else random.choice(candidates[:2])
-                    except:
-                        next_node = random.choice(candidates)
+                if self.dist_map and random.random() < 0.7:
+                    # Hedefe yakın olanları öne al
+                    candidates.sort(key=lambda n: self.dist_map.get(n, float('inf')))
+                    
+                    if len(candidates) >= 2:
+                        next_node = candidates[0] if random.random() < 0.8 else candidates[1]
+                    else:
+                        next_node = candidates[0]
                 else:
                     next_node = random.choice(candidates)
-                # ---------------------------------------
 
                 path.append(next_node)
                 visited.add(next_node)
@@ -57,98 +65,78 @@ class GeneticOptimizer:
         return None
 
     def _calculate_fitness(self, path, weights):
-        # Temel maliyet
         total_cost, metrics = self.manager.calculate_path_cost(path, weights, self.bw_demand)
         
         penalty = 0
-        # Bant genişliği cezası
         path_min_bw = metrics.get('min_bw', 0)
+        
         if path_min_bw < self.bw_demand:
-            diff = self.bw_demand - path_min_bw
-            penalty += diff * 2000 # Ceza katsayısı
-            
-        # Hop limiti cezası
+            penalty += (self.bw_demand - path_min_bw) * 2000
         if len(path) > self.max_hop_limit:
             penalty += (len(path) - self.max_hop_limit) * 1000
 
-        # Hafif Rastgele Gürültü (Noise) Ekleme
-        # Bu, eşit maliyetli yollar arasında bile mikro farklar yaratarak std sapmayı tetikler.
         noise = random.uniform(0.0, 0.99)
-        
-        final_fitness = total_cost + penalty + noise
-        return final_fitness, metrics
+        return total_cost + penalty + noise, metrics
 
     def _crossover(self, parent1, parent2):
-        if random.random() > self.crossover_rate:
-            return parent1[:] 
-
-        p1_mids = parent1[1:-1]
-        p2_mids = parent2[1:-1]
-        common_nodes = list(set(p1_mids).intersection(p2_mids))
+        if random.random() > self.crossover_rate: return parent1[:]
         
-        if not common_nodes:
-            return parent1[:] 
-            
-        pivot = random.choice(common_nodes)
+        p1_mids = parent1[1:-1]
+        p2_mids = set(parent2[1:-1])
+        common = [n for n in p1_mids if n in p2_mids]
+        
+        if not common: return parent1[:]
+        
+        pivot = random.choice(common)
         try:
             idx1 = parent1.index(pivot)
             idx2 = parent2.index(pivot)
             child = parent1[:idx1+1] + parent2[idx2+1:]
             
             if len(child) != len(set(child)):
-                child_alt = parent2[:idx2+1] + parent1[idx1+1:]
-                if len(child_alt) == len(set(child_alt)):
-                    return child_alt
-                return parent1[:] 
+                return parent1[:]
             return child
-        except ValueError:
+        except:
             return parent1[:]
 
     def _mutate(self, path):
-        if random.random() > self.mutation_rate:
+        if random.random() > self.mutation_rate or len(path) < 3:
             return path
             
-        new_path = path[:] 
-        if len(new_path) < 3: return new_path
-
-        idx = random.randint(1, len(new_path) - 2)
-        prev_node = new_path[idx-1]
-        next_node = new_path[idx+1]
-        
-        prev_neighbors = self.manager.G.neighbors(prev_node)
-        candidates = []
-        for n in prev_neighbors:
-            if n != new_path[idx] and n not in new_path and self.manager.G.has_edge(n, next_node):
-                candidates.append(n)
-        
-        if candidates:
-            new_path[idx] = random.choice(candidates)
+        new_path = path[:]
+        try:
+            idx = random.randint(1, len(new_path) - 2)
+            prev_node = new_path[idx-1]
+            next_node = new_path[idx+1]
+            
+            candidates = [n for n in self.manager.G[prev_node] 
+                          if n != new_path[idx] and n not in new_path and self.manager.G.has_edge(n, next_node)]
+            
+            if candidates:
+                new_path[idx] = random.choice(candidates)
+        except:
+            pass
             
         return new_path
 
     def solve(self, weights):
-        """
-        DİKKAT: 'Shortest Path' (Dijkstra) hilesi kaldırıldı.
-        Algoritma artık tamamen kör başlıyor ve öğreniyor.
-        """
         population = []
-        
-        # Sadece rastgele yollarla doldur
         attempts = 0
+        
+        # Başlangıç popülasyonunu oluştur
         while len(population) < self.pop_size and attempts < self.pop_size * 20:
             p = self._generate_random_path()
-            if p:
-                if p not in population:
+            if p: 
+                # Aynı yolu tekrar ekleme
+                if not any(p == existing for existing in population):
                     population.append(p)
             attempts += 1
             
-        if not population:
-            return [], 0.0, {}
+        if not population: return [], 0.0, {}
 
         global_best_path = None
         global_best_fitness = float('inf')
         global_best_metrics = {}
-        
         stagnation_counter = 0
 
         for generation in range(self.max_generations):
@@ -165,44 +153,42 @@ class GeneticOptimizer:
                 global_best_path = current_best['path']
                 global_best_metrics = current_best['metrics']
                 stagnation_counter = 0
-                self.mutation_rate = self.base_mutation_rate
             else:
                 stagnation_counter += 1
-                
-            # Dinamik Mutasyon
-            if stagnation_counter > 3:
-                self.mutation_rate = min(0.8, self.mutation_rate + 0.1) # Daha agresif artış
+
+            if stagnation_counter >= 15:
+                break
             
-            new_population = []
-            
-            # Elitizm
-            for i in range(self.elitism_count):
-                if i < len(pop_data):
-                    new_population.append(pop_data[i]['path'])
-            
-            seen_paths = set(tuple(p) for p in new_population)
+            # --- YENİ NESİL OLUŞTURMA (HATA DÜZELTME BURADA) ---
+            new_population = [d['path'] for d in pop_data[:self.elitism_count]]
             
             while len(new_population) < self.pop_size:
-                subset = random.sample(pop_data, min(len(pop_data), self.tournament_size))
-                p1 = min(subset, key=lambda x: x['fitness'])['path']
-                subset2 = random.sample(pop_data, min(len(pop_data), self.tournament_size))
-                p2 = min(subset2, key=lambda x: x['fitness'])['path']
+                # EĞER YETERLİ POPÜLASYON YOKSA CROSSOVER YAPMA
+                if len(pop_data) < 2:
+                    # Yeterli ebeveyn yok, rastgele yeni yol üretmeye çalış
+                    p = self._generate_random_path()
+                    if p: new_population.append(p)
+                    else: 
+                        # Rastgele de bulamazsan eldekini mutasyona uğratıp ekle
+                        new_population.append(self._mutate(pop_data[0]['path']))
+                    continue
+
+                # Yeterli eleman varsa Turnuva yap
+                sample_size = min(len(pop_data), 5)
+                # Garanti kontrol: sample_size en az 2 olmalı
+                if sample_size < 2: sample_size = 2
                 
-                child = self._crossover(p1, p2)
-                child = self._mutate(child)
-                
-                child_tuple = tuple(child)
-                if child_tuple not in seen_paths:
+                try:
+                    parents = random.sample(pop_data, sample_size)
+                    parents.sort(key=lambda x: x['fitness'])
+                    
+                    # Artık parents[0] ve parents[1] garantili
+                    child = self._crossover(parents[0]['path'], parents[1]['path'])
+                    child = self._mutate(child)
                     new_population.append(child)
-                    seen_paths.add(child_tuple)
-                else:
-                    rp = self._generate_random_path()
-                    if rp:
-                        new_population.append(rp)
-                    else:
-                        # Random bulunamazsa mutasyonlu bir kopya al
-                        mutated_clone = self._mutate(child)
-                        new_population.append(mutated_clone)
+                except ValueError:
+                    # Çok nadir durumda sample alınamazsa
+                    new_population.append(self._mutate(pop_data[0]['path']))
             
             population = new_population
 

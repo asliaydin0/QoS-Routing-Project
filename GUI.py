@@ -101,7 +101,7 @@ def create_card(title, color, big=False):
     return card, lbl_val
 
 # ==========================================================
-#  SONUÇ PENCERESİ (YENİ EKLENEN SINIF)
+#  SONUÇ PENCERESİ
 # ==========================================================
 class BatchResultsWindow(QtWidgets.QDialog):
     def __init__(self, data, parent=None):
@@ -179,7 +179,7 @@ class BatchResultsWindow(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
 # ==========================================================
-#  BATCH WORKER (TOPLU TEST İÇİN)
+#  BATCH WORKER (OPTIMIZE EDİLMİŞ)
 # ==========================================================
 class BatchTestWorker(QThread):
     progress_signal = pyqtSignal(int, str) 
@@ -199,47 +199,46 @@ class BatchTestWorker(QThread):
         scenarios_to_run = list(self.demands)
         
         # Eksikse rastgele tamamla
-        while len(scenarios_to_run) < target_scenario_count:
-            nodes = list(self.manager.G.nodes())
-            if not nodes: break
+        nodes = list(self.manager.G.nodes())
+        while len(scenarios_to_run) < target_scenario_count and len(nodes) > 1:
             s = random.choice(nodes)
             d = random.choice(nodes)
-            while s == d: d = random.choice(nodes)
-            bw = random.choice([50, 100, 150, 250])
-            scenarios_to_run.append({'src': s, 'dst': d, 'bw': bw})
+            if s != d:
+                bw = random.choice([50, 100, 150, 250])
+                scenarios_to_run.append({'src': s, 'dst': d, 'bw': bw})
 
         scenarios_to_run = scenarios_to_run[:max(len(self.demands), target_scenario_count)]
         total_steps = len(scenarios_to_run) * len(self.algorithms) * self.repetitions
         current_step = 0
+        last_emitted_pct = -1
 
         for i, sc in enumerate(scenarios_to_run):
             src, dst, bw = sc['src'], sc['dst'], sc['bw']
-            # --- YOL KONTROLÜ ---
-            # Eğer fiziksel olarak yol yoksa, boşuna 4 algoritmayı yorma.
+            
+            # YOL KONTROLÜ
             if not nx.has_path(self.manager.G, src, dst):
-                # Rapora direkt "YOL YOK" yazıp geç
                 for algo_name in self.algorithms:
                      row = {
-                        "Senaryo": i + 1,
-                        "Kaynak": src, "Hedef": dst, "Bant_Gen": bw,
-                        "Algoritma": algo_name,
-                        "Basari": "0/5", "Durum": "BAŞARISIZ",
+                        "Senaryo": i + 1, "Kaynak": src, "Hedef": dst, "Bant_Gen": bw,
+                        "Algoritma": algo_name, "Basari": "0/5", "Durum": "BAŞARISIZ",
                         "Ort_Maliyet": "0.00", "Std_Sapma": "0.00",
                         "En_Iyi": "0.00", "En_Kotu": "0.00", "Ort_Sure_ms": "0.00",
                         "Not": "Topolojik Yol Yok (Unreachable)"
                     }
                      full_report.append(row)
-                continue # Bir sonraki senaryoya atla
+                continue 
             
             for algo_name in self.algorithms:
-                costs = []
-                times = []
-                success_count = 0
+                costs = []; times = []; success_count = 0
                 
                 for r in range(self.repetitions):
                     current_step += 1
+                    
+                    # --- OPTIMIZATION: Sinyal Sıklığını Azalt ---
                     progress_pct = int((current_step / total_steps) * 100)
-                    self.progress_signal.emit(progress_pct, f"Senaryo {i+1} - {algo_name} ({r+1}/{self.repetitions})")
+                    if progress_pct > last_emitted_pct:
+                        self.progress_signal.emit(progress_pct, f"Senaryo {i+1} - {algo_name} ({r+1}/{self.repetitions})")
+                        last_emitted_pct = progress_pct
 
                     optimizer = None
                     if algo_name == "GA": optimizer = GeneticOptimizer(self.manager, src, dst, bw)
@@ -257,32 +256,23 @@ class BatchTestWorker(QThread):
                         success_count += 1
                     
                 if success_count > 0:
-                    # --- Maliyetleri temizle ---
                     cleaned_costs = [clean_cost_value(c) for c in costs]
-                    
                     avg_cost = statistics.mean(cleaned_costs)
-                    # Standart sapma temizlenmiş veriden hesaplanır
                     std_dev = statistics.stdev(cleaned_costs) if len(cleaned_costs) > 1 else 0.0
                     best_cost = min(cleaned_costs)
                     worst_cost = max(cleaned_costs)
-                    
                     avg_time = statistics.mean(times)
-                    status = "BAŞARILI"
-                    reason = "-"
+                    status = "BAŞARILI"; reason = "-"
                 else:
                     avg_cost = 0; std_dev = 0; best_cost = 0; worst_cost = 0; avg_time = 0
-                    status = "BAŞARISIZ"
-                    reason = "Yol Bulunamadı"
+                    status = "BAŞARISIZ"; reason = "Yol Bulunamadı"
 
                 row = {
-                    "Senaryo": i + 1,
-                    "Kaynak": src,
-                    "Hedef": dst,
-                    "Bant_Gen": bw,
+                    "Senaryo": i + 1, "Kaynak": src, "Hedef": dst, "Bant_Gen": bw,
                     "Algoritma": algo_name,
                     "Basari": f"{success_count}/{self.repetitions}",
                     "Ort_Maliyet": f"{avg_cost:.2f}",
-                    "Std_Sapma": f"{std_dev:.4f}", # Hassasiyet artırıldı
+                    "Std_Sapma": f"{std_dev:.4f}",
                     "En_Iyi": f"{best_cost:.2f}",
                     "En_Kotu": f"{worst_cost:.2f}",
                     "Ort_Sure_ms": f"{avg_time:.2f}",
@@ -348,7 +338,7 @@ class RoutingWorker(QThread):
             self.error.emit(str(e))
 
 # ==========================================================
-#  GRAFİK 1: AĞ TOPOLOJİSİ (GraphCanvas)
+#  GRAFİK 1: AĞ TOPOLOJİSİ (GraphCanvas - OPTIMIZE)
 # ==========================================================
 class GraphCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -485,7 +475,9 @@ class GraphCanvas(FigureCanvas):
         COLOR_BG_NODE = "#60a5fa"; COLOR_BG_EDGE = "#475569"
         COLOR_SRC = "#22c55e"; COLOR_DST = "#ef4444"; COLOR_PATH = "#00e5ff"
         
-        if not self.pos or set(self.pos.keys()) != set(G.nodes()):
+        # --- OPTIMIZATION: Pozisyonları Sakla ---
+        # Pozisyonları tekrar tekrar hesaplamak yerine cache'den kullan
+        if not self.pos or len(self.pos) != len(G.nodes()):
             try: self.pos = nx.kamada_kawai_layout(G)
             except: self.pos = nx.spring_layout(G, seed=42)
 
@@ -534,7 +526,6 @@ class ComparisonCanvas(FigureCanvas):
         for a in algos:
             m = results[a]
             if m.get('success', False):
-                # --- Grafiklere Temiz Maliyeti Bas ---
                 raw_c = m.get('total_cost', 0)
                 clean_c = clean_cost_value(raw_c)
                 
@@ -673,26 +664,19 @@ class Window(QtWidgets.QWidget):
             l_opt.addLayout(row); self.sliders.append(s)
         gb_opt.setLayout(l_opt); sidebar.addWidget(gb_opt)
 
-          # --- EKLEMENİZ GEREKEN KISIM ---
-        # --- ŞIK VE MOR BAŞLIKLI SEED GRUBU ---
-        self.gb_seed = QtWidgets.QGroupBox("Rastgelelik Ayarları") # Bu başlık otomatik mor olur
+        # --- SEED (TOHUM) GRUBU ---
+        self.gb_seed = QtWidgets.QGroupBox("Rastgelelik Ayarları")
         l_seed = QtWidgets.QVBoxLayout()
-        
         self.seed_label = QtWidgets.QLabel("Tohum Değeri (Seed):")
         self.seed_input = QtWidgets.QSpinBox()
         self.seed_input.setRange(0, 999999)
         self.seed_input.setValue(42)
         self.seed_input.setMinimumHeight(35)
-        
         l_seed.addWidget(self.seed_label)
         l_seed.addWidget(self.seed_input)
         self.gb_seed.setLayout(l_seed)
-        
-        # Grubu sidebar'a ekliyoruz
         sidebar.addWidget(self.gb_seed) 
 
-        
-# ------------------------------
         self.btn_run = QtWidgets.QPushButton("HESAPLA VE ÇİZ"); self.btn_run.setMinimumHeight(45)
         self.btn_run.clicked.connect(self.run_single); sidebar.addWidget(self.btn_run)
 
@@ -756,12 +740,15 @@ class Window(QtWidgets.QWidget):
 
     # --- TEKİL VE KIYASLAMA İŞLEVLERİ ---
     def run_single(self):
-        # --- SEED AKTİF ETME (EKLEDİĞİMİZ KISIM) ---
+        # --- SEED (TOHUM) UYGULAMA ---
         user_seed = self.seed_input.value()
         random.seed(user_seed)
-        import numpy as np
-        np.random.seed(user_seed)
-        # ------------------------------------------
+        try:
+            import numpy as np
+            np.random.seed(user_seed)
+        except ImportError:
+            pass
+        # -----------------------------
 
         try: 
             s, d = int(self.src_edit.text()), int(self.dst_edit.text()); 
@@ -781,6 +768,7 @@ class Window(QtWidgets.QWidget):
         self.worker.finished_single.connect(self.on_single_done); 
         self.worker.error.connect(self.on_error); 
         self.worker.start()
+
     def on_single_done(self, path, cost, metrics):
         self.btn_run.setText("HESAPLA VE ÇİZ"); self.btn_run.setEnabled(True)
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
@@ -790,7 +778,7 @@ class Window(QtWidgets.QWidget):
         path_str = " -> ".join(map(str, path)) if path else "YOL BULUNAMADI"
         self.lbl_path_nodes.setText(path_str); self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(-)")
         
-        # --- Temiz maliyeti göster ---
+        # Temiz maliyet
         raw_cost = metrics.get('total_cost', cost)
         display_cost = clean_cost_value(raw_cost)
 
@@ -819,7 +807,6 @@ class Window(QtWidgets.QWidget):
         html = f"<div><h2 style='color:#60a5fa;'>KIYASLAMA BİTTİ</h2><p><b>En İyi:</b> <span style='color:#22c55e; font-size:18px;'>{best}</span></p>"
         ordered = sorted(results.items(), key=lambda kv: kv[1].get("total_cost", float("inf")))
         for algo, m in ordered:
-            # ---  Kıyaslama Raporunda Temiz Maliyet ---
             raw_c = m.get('total_cost', 0)
             disp_c = clean_cost_value(raw_c)
 
@@ -845,7 +832,6 @@ if __name__ == "__main__":
         QPushButton#compareBtn {{ background-color: {THEME['BTN_COMPARE']}; }}
         QPushButton#compareBtn:hover {{ background-color: #059669; }}
         
-        /* BURAYA QSpinBox EKLEDİK: Böylece seed kutusu da diğerleri gibi koyu olacak */
         QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ 
             background-color: #262c33; 
             border: 1px solid {THEME['BORDER']}; 
