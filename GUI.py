@@ -69,10 +69,6 @@ THEME = {
 #  YARDIMCI FONKSİYONLAR
 # ==========================================================
 def clean_cost_value(val):
-    """
-    Maliyet 1.000.000 üzerindeyse (ceza puanı varsa) bunu temizler.
-    Böylece raporlarda ve grafiklerde saf maliyet görünür.
-    """
     if val > 1000000:
         return val - 1000000
     return val
@@ -113,12 +109,10 @@ class BatchResultsWindow(QtWidgets.QDialog):
         
         layout = QtWidgets.QVBoxLayout(self)
         
-        # Başlık
         lbl = QtWidgets.QLabel("TOPLU TEST RAPORU")
         lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #f59e0b; margin-bottom: 10px;")
         layout.addWidget(lbl)
 
-        # Tablo
         self.table = QtWidgets.QTableWidget()
         self.table.setStyleSheet("""
             QTableWidget { background-color: #1e293b; border: 1px solid #3c4654; gridline-color: #3c4654; }
@@ -127,7 +121,6 @@ class BatchResultsWindow(QtWidgets.QDialog):
         """)
         layout.addWidget(self.table)
         
-        # Butonlar
         btn_layout = QtWidgets.QHBoxLayout()
         btn_export = QtWidgets.QPushButton("CSV OLARAK İNDİR")
         btn_export.setStyleSheet("background-color: #10b981; color: white; font-weight: bold; padding: 10px; border-radius: 5px;")
@@ -146,24 +139,18 @@ class BatchResultsWindow(QtWidgets.QDialog):
 
     def populate_table(self):
         if not self.data: return
-        
         headers = list(self.data[0].keys())
         self.table.setColumnCount(len(headers))
         self.table.setRowCount(len(self.data))
         self.table.setHorizontalHeaderLabels(headers)
-        
         for row_idx, row_data in enumerate(self.data):
             for col_idx, key in enumerate(headers):
                 val = row_data[key]
                 item = QtWidgets.QTableWidgetItem(str(val))
-                
-                # Renklendirme
                 if key == "Durum":
                     if val == "BAŞARILI": item.setForeground(QtGui.QColor("#22c55e"))
                     else: item.setForeground(QtGui.QColor("#ef4444"))
-                
                 self.table.setItem(row_idx, col_idx, item)
-        
         self.table.resizeColumnsToContents()
 
     def export_csv(self):
@@ -179,7 +166,7 @@ class BatchResultsWindow(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
 # ==========================================================
-#  BATCH WORKER (OPTIMIZE EDİLMİŞ)
+#  BATCH WORKER
 # ==========================================================
 class BatchTestWorker(QThread):
     progress_signal = pyqtSignal(int, str) 
@@ -197,8 +184,6 @@ class BatchTestWorker(QThread):
         full_report = []
         target_scenario_count = 20
         scenarios_to_run = list(self.demands)
-        
-        # Eksikse rastgele tamamla
         nodes = list(self.manager.G.nodes())
         while len(scenarios_to_run) < target_scenario_count and len(nodes) > 1:
             s = random.choice(nodes)
@@ -214,8 +199,6 @@ class BatchTestWorker(QThread):
 
         for i, sc in enumerate(scenarios_to_run):
             src, dst, bw = sc['src'], sc['dst'], sc['bw']
-            
-            # YOL KONTROLÜ
             if not nx.has_path(self.manager.G, src, dst):
                 for algo_name in self.algorithms:
                      row = {
@@ -223,18 +206,15 @@ class BatchTestWorker(QThread):
                         "Algoritma": algo_name, "Basari": "0/5", "Durum": "BAŞARISIZ",
                         "Ort_Maliyet": "0.00", "Std_Sapma": "0.00",
                         "En_Iyi": "0.00", "En_Kotu": "0.00", "Ort_Sure_ms": "0.00",
-                        "Not": "Topolojik Yol Yok (Unreachable)"
+                        "Not": "Fiziksel Yol Yok"
                     }
                      full_report.append(row)
                 continue 
             
             for algo_name in self.algorithms:
                 costs = []; times = []; success_count = 0
-                
                 for r in range(self.repetitions):
                     current_step += 1
-                    
-                    # --- OPTIMIZATION: Sinyal Sıklığını Azalt ---
                     progress_pct = int((current_step / total_steps) * 100)
                     if progress_pct > last_emitted_pct:
                         self.progress_signal.emit(progress_pct, f"Senaryo {i+1} - {algo_name} ({r+1}/{self.repetitions})")
@@ -249,7 +229,6 @@ class BatchTestWorker(QThread):
                     t_start = time.time()
                     path, cost, metrics = optimizer.solve(self.weights)
                     t_end = time.time()
-                    
                     if path:
                         costs.append(cost)
                         times.append((t_end - t_start) * 1000)
@@ -265,26 +244,21 @@ class BatchTestWorker(QThread):
                     status = "BAŞARILI"; reason = "-"
                 else:
                     avg_cost = 0; std_dev = 0; best_cost = 0; worst_cost = 0; avg_time = 0
-                    status = "BAŞARISIZ"; reason = "Yol Bulunamadı"
+                    status = "BAŞARISIZ"; reason = "Algoritma Yakınsayamadı"
 
                 row = {
                     "Senaryo": i + 1, "Kaynak": src, "Hedef": dst, "Bant_Gen": bw,
-                    "Algoritma": algo_name,
-                    "Basari": f"{success_count}/{self.repetitions}",
-                    "Ort_Maliyet": f"{avg_cost:.2f}",
-                    "Std_Sapma": f"{std_dev:.4f}",
-                    "En_Iyi": f"{best_cost:.2f}",
-                    "En_Kotu": f"{worst_cost:.2f}",
-                    "Ort_Sure_ms": f"{avg_time:.2f}",
-                    "Durum": status,
-                    "Not": reason
+                    "Algoritma": algo_name, "Basari": f"{success_count}/{self.repetitions}",
+                    "Ort_Maliyet": f"{avg_cost:.2f}", "Std_Sapma": f"{std_dev:.4f}",
+                    "En_Iyi": f"{best_cost:.2f}", "En_Kotu": f"{worst_cost:.2f}",
+                    "Ort_Sure_ms": f"{avg_time:.2f}", "Durum": status, "Not": reason
                 }
                 full_report.append(row)
 
         self.finished_signal.emit(full_report)
 
 # ==========================================================
-#  ROUTING WORKER
+#  ROUTING WORKER (GÜNCELLENDİ: DETAYLI HATA KONTROLÜ)
 # ==========================================================
 class RoutingWorker(QThread):
     finished_single = pyqtSignal(list, float, dict)
@@ -303,6 +277,16 @@ class RoutingWorker(QThread):
 
     def _solve_with_algo(self, name):
         if not ALGO_IMPORTED: raise Exception("Algoritma dosyaları eksik!")
+        
+        # --- 1. FİZİKSEL YOL KONTROLÜ ---
+        # Algoritmayı hiç çalıştırmadan önce, graf üzerinde yol var mı bakıyoruz.
+        if not nx.has_path(self.manager.G, self.src, self.dst):
+            return [], 0.0, {
+                'success': False, 
+                'fail_reason': 'Fiziksel Yol Yok (Topoloji Kopuk)',
+                'time_ms': 0
+            }
+
         start_time = time.time()
         optimizer = None
         if name == "GA": optimizer = GeneticOptimizer(self.manager, self.src, self.dst, self.bw_demand)
@@ -310,16 +294,23 @@ class RoutingWorker(QThread):
         elif name == "ABC": optimizer = ABCOptimizer(self.manager, self.src, self.dst, self.bw_demand)
         elif name == "SA": optimizer = SAOptimizer(self.manager, self.src, self.dst, self.bw_demand)
         
-        if optimizer: path, cost, metrics = optimizer.solve(self.weights)
-        else: path, cost, metrics = [], 0, {}
+        if optimizer: 
+            path, cost, metrics = optimizer.solve(self.weights)
+        else: 
+            path, cost, metrics = [], 0, {}
 
         end_time = time.time()
+        metrics['time_ms'] = (end_time - start_time) * 1000
+        
         if not path:
             metrics['success'] = False
             metrics['total_cost'] = float('inf')
+            # Eğer fiziksel yol vardı ama algoritma bulamadıysa:
+            metrics['fail_reason'] = 'Algoritma Çözüm Bulamadı'
         else:
             metrics['success'] = True
-        metrics['time_ms'] = (end_time - start_time) * 1000
+            metrics['fail_reason'] = None
+            
         return path, cost, metrics
 
     def run(self):
@@ -338,7 +329,7 @@ class RoutingWorker(QThread):
             self.error.emit(str(e))
 
 # ==========================================================
-#  GRAFİK 1: AĞ TOPOLOJİSİ (GraphCanvas - OPTIMIZE)
+#  GRAFİK 1: AĞ TOPOLOJİSİ
 # ==========================================================
 class GraphCanvas(FigureCanvas):
     def __init__(self, parent=None):
@@ -475,8 +466,6 @@ class GraphCanvas(FigureCanvas):
         COLOR_BG_NODE = "#60a5fa"; COLOR_BG_EDGE = "#475569"
         COLOR_SRC = "#22c55e"; COLOR_DST = "#ef4444"; COLOR_PATH = "#00e5ff"
         
-        # --- OPTIMIZATION: Pozisyonları Sakla ---
-        # Pozisyonları tekrar tekrar hesaplamak yerine cache'den kullan
         if not self.pos or len(self.pos) != len(G.nodes()):
             try: self.pos = nx.kamada_kawai_layout(G)
             except: self.pos = nx.spring_layout(G, seed=42)
@@ -528,7 +517,6 @@ class ComparisonCanvas(FigureCanvas):
             if m.get('success', False):
                 raw_c = m.get('total_cost', 0)
                 clean_c = clean_cost_value(raw_c)
-                
                 costs.append(clean_c)
                 times.append(m.get('time_ms', 0))
                 delays.append(m.get('delay', 0)); rels.append(m.get('rel_prob', 0)); labels.append(None)
@@ -601,7 +589,6 @@ class Window(QtWidgets.QWidget):
             self.btn_batch.setEnabled(False)
             self.btn_batch.setText("Test Yapılıyor... (%0)")
             w = tuple(sl.value()/100 for sl in self.sliders)
-            
             self.batch_worker = BatchTestWorker(self.manager, self.manager.demands, w)
             self.batch_worker.progress_signal.connect(self.update_batch_progress)
             self.batch_worker.finished_signal.connect(self.show_batch_results)
@@ -615,8 +602,6 @@ class Window(QtWidgets.QWidget):
         self.btn_batch.setEnabled(True)
         self.btn_batch.setText("OTOMATİK TOPLU TEST")
         self.path_box.setPlainText("Test tamamlandı. Sonuç penceresi açıldı.")
-        
-        # Sonuç penceresini aç
         self.results_window = BatchResultsWindow(report_data, self)
         self.results_window.show()
 
@@ -664,7 +649,6 @@ class Window(QtWidgets.QWidget):
             l_opt.addLayout(row); self.sliders.append(s)
         gb_opt.setLayout(l_opt); sidebar.addWidget(gb_opt)
 
-        # --- SEED (TOHUM) GRUBU ---
         self.gb_seed = QtWidgets.QGroupBox("Rastgelelik Ayarları")
         l_seed = QtWidgets.QVBoxLayout()
         self.seed_label = QtWidgets.QLabel("Tohum Değeri (Seed):")
@@ -684,7 +668,6 @@ class Window(QtWidgets.QWidget):
         self.btn_compare.setObjectName("compareBtn"); self.btn_compare.clicked.connect(self.run_compare)
         sidebar.addWidget(self.btn_compare)
 
-        # --- YENİ BATCH TEST BUTONU ---
         self.btn_batch = QtWidgets.QPushButton("OTOMATİK TOPLU TEST")
         self.btn_batch.setMinimumHeight(50)
         self.btn_batch.setStyleSheet(f"background-color: {THEME['BTN_BATCH']}; color: white; font-weight: bold; border-radius: 5px;")
@@ -738,9 +721,8 @@ class Window(QtWidgets.QWidget):
 
         if self.scenario_combo.count() > 0: self.on_scenario_changed(0)
 
-    # --- TEKİL VE KIYASLAMA İŞLEVLERİ ---
+    # --- TEKİL VE KIYASLAMA İŞLEVLERİ (GÜNCELLENDİ) ---
     def run_single(self):
-        # --- SEED (TOHUM) UYGULAMA ---
         user_seed = self.seed_input.value()
         random.seed(user_seed)
         try:
@@ -748,7 +730,6 @@ class Window(QtWidgets.QWidget):
             np.random.seed(user_seed)
         except ImportError:
             pass
-        # -----------------------------
 
         try: 
             s, d = int(self.src_edit.text()), int(self.dst_edit.text()); 
@@ -773,12 +754,30 @@ class Window(QtWidgets.QWidget):
         self.btn_run.setText("HESAPLA VE ÇİZ"); self.btn_run.setEnabled(True)
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
         except: s, d = None, None
+        
         self.canvas_net.draw_graph(self.G, path, s, d)
         self.algo_pill.setText(self.algo_combo.currentText())
-        path_str = " -> ".join(map(str, path)) if path else "YOL BULUNAMADI"
-        self.lbl_path_nodes.setText(path_str); self.lbl_hops.setText(f"({len(path)-1} sıçrama)" if path else "(-)")
         
-        # Temiz maliyet
+        # --- HATA DETAYINI GÖSTERME KISMI ---
+        fail_reason = metrics.get('fail_reason')
+        
+        if path:
+            path_str = " -> ".join(map(str, path))
+            self.lbl_path_nodes.setText(path_str)
+            self.lbl_hops.setText(f"({len(path)-1} sıçrama)")
+            status_text = "BAŞARILI"
+            reason_text = "-"
+            path_color = THEME['PATH_COLOR']
+        else:
+            path_str = fail_reason if fail_reason else "YOL BULUNAMADI"
+            self.lbl_path_nodes.setText(path_str)
+            self.lbl_hops.setText("(-)")
+            status_text = "BAŞARISIZ"
+            reason_text = fail_reason
+            path_color = "#ef4444"
+        
+        self.lbl_path_nodes.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {path_color};")
+
         raw_cost = metrics.get('total_cost', cost)
         display_cost = clean_cost_value(raw_cost)
 
@@ -788,7 +787,13 @@ class Window(QtWidgets.QWidget):
         self.val_total.setText(f"{display_cost:.4f}")
 
         self.lbl_time_val.setText(f"{metrics.get('time_ms',0):.2f} ms")
-        log = f"ALGORİTMA: {self.algo_combo.currentText()}\nTalep: {getattr(self, 'current_bw_demand', 0)} Mbps\nDurum: {'BAŞARILI' if path else 'BAŞARISIZ'}\nMaliyet: {display_cost:.4f}\nRota: {path_str}"
+        
+        log = (f"ALGORİTMA: {self.algo_combo.currentText()}\n"
+               f"Talep: {getattr(self, 'current_bw_demand', 0)} Mbps\n"
+               f"Durum: {status_text}\n"
+               f"Sebep: {reason_text}\n"
+               f"Maliyet: {display_cost:.4f}\n"
+               f"Rota: {path_str}")
         self.path_box.setPlainText(log)
 
     def run_compare(self):
@@ -810,8 +815,14 @@ class Window(QtWidgets.QWidget):
             raw_c = m.get('total_cost', 0)
             disp_c = clean_cost_value(raw_c)
 
-            status_html = f"<span style='color:#cbd5f5;'>Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br><span style='color:#cbd5f5;'>Maliyet: <b>{disp_c:.4f}</b></span>" if m.get('success') else "<span style='color:#ef4444; font-weight:bold;'>BAŞARISIZ</span>"
-            color = "#93c5fd" if m.get('success') else "#ef4444"
+            if m.get('success'):
+                status_html = f"<span style='color:#cbd5f5;'>Gecikme: {m.get('delay',0):.2f} | Güven: {m.get('rel_prob',0):.4f}</span><br><span style='color:#cbd5f5;'>Maliyet: <b>{disp_c:.4f}</b></span>"
+                color = "#93c5fd"
+            else:
+                reason = m.get('fail_reason', 'Bilinmiyor')
+                status_html = f"<span style='color:#ef4444; font-weight:bold;'>BAŞARISIZ ({reason})</span>"
+                color = "#ef4444"
+
             html += f"<div style='margin-top:10px; border-bottom:1px solid #374151; padding-bottom:5px;'><b style='color:{color};'>▶ {algo}</b><br>{status_html}</div>"
         html += "</div>"
         self.path_box.setHtml(html); self.canvas_perf.update_charts(results)
