@@ -21,33 +21,39 @@ class GeneticOptimizer:
         self.stagnation_limit = 10   
         
     def _generate_random_path(self, max_attempts=50):
-        """
-        Tamamen rastgele yol üretici.
-        """
         for _ in range(max_attempts):
             path = [self.src]
-            visited = {self.src}
             curr = self.src
-            
+            visited = {self.src}
+
             while curr != self.dst:
                 neighbors = list(self.manager.G.neighbors(curr))
                 candidates = [n for n in neighbors if n not in visited]
-                
-                if not candidates:
-                    break 
-                
-                # Sadece rastgele seçim (Akıllı seçim yok - Varyasyon artsın diye)
-                next_node = random.choice(candidates)
-                
+
+                if not candidates: break
+
+                # --- AKILLI SEÇİM ---
+                # Rastgele değil, hedefe yakın olana gitme ihtimalini artır
+                # Epsilon-Greedy benzeri: %70 akıllı, %30 rastgele (çeşitlilik için)
+                if random.random() < 0.7:
+                    # Hedefe en yakın olan komşuyu seç (NetworkX shortest_path_length ile)
+                    try:
+                        candidates.sort(key=lambda n: nx.shortest_path_length(self.manager.G, n, self.dst))
+                        # En iyi 2 adaydan birini seç
+                        next_node = candidates[0] if len(candidates)==1 else random.choice(candidates[:2])
+                    except:
+                        next_node = random.choice(candidates)
+                else:
+                    next_node = random.choice(candidates)
+                # ---------------------------------------
+
                 path.append(next_node)
                 visited.add(next_node)
                 curr = next_node
-                
-                if len(path) > self.max_hop_limit:
-                    break
-            
-            if curr == self.dst:
-                return path
+
+                if len(path) > self.max_hop_limit: break
+
+            if curr == self.dst: return path
         return None
 
     def _calculate_fitness(self, path, weights):
