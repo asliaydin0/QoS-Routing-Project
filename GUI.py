@@ -673,6 +673,26 @@ class Window(QtWidgets.QWidget):
             l_opt.addLayout(row); self.sliders.append(s)
         gb_opt.setLayout(l_opt); sidebar.addWidget(gb_opt)
 
+          # --- EKLEMENİZ GEREKEN KISIM ---
+        # --- ŞIK VE MOR BAŞLIKLI SEED GRUBU ---
+        self.gb_seed = QtWidgets.QGroupBox("Rastgelelik Ayarları") # Bu başlık otomatik mor olur
+        l_seed = QtWidgets.QVBoxLayout()
+        
+        self.seed_label = QtWidgets.QLabel("Tohum Değeri (Seed):")
+        self.seed_input = QtWidgets.QSpinBox()
+        self.seed_input.setRange(0, 999999)
+        self.seed_input.setValue(42)
+        self.seed_input.setMinimumHeight(35)
+        
+        l_seed.addWidget(self.seed_label)
+        l_seed.addWidget(self.seed_input)
+        self.gb_seed.setLayout(l_seed)
+        
+        # Grubu sidebar'a ekliyoruz
+        sidebar.addWidget(self.gb_seed) 
+
+        
+# ------------------------------
         self.btn_run = QtWidgets.QPushButton("HESAPLA VE ÇİZ"); self.btn_run.setMinimumHeight(45)
         self.btn_run.clicked.connect(self.run_single); sidebar.addWidget(self.btn_run)
 
@@ -736,15 +756,31 @@ class Window(QtWidgets.QWidget):
 
     # --- TEKİL VE KIYASLAMA İŞLEVLERİ ---
     def run_single(self):
-        try: s, d = int(self.src_edit.text()), int(self.dst_edit.text()); bw = getattr(self, 'current_bw_demand', 0)
-        except: return
+        # --- SEED AKTİF ETME (EKLEDİĞİMİZ KISIM) ---
+        user_seed = self.seed_input.value()
+        random.seed(user_seed)
+        import numpy as np
+        np.random.seed(user_seed)
+        # ------------------------------------------
+
+        try: 
+            s, d = int(self.src_edit.text()), int(self.dst_edit.text()); 
+            bw = getattr(self, 'current_bw_demand', 0)
+        except: 
+            return
+
         w = tuple(sl.value()/100 for sl in self.sliders)
         key = ["GA", "RL", "ABC", "SA"][self.algo_combo.currentIndex()]
-        self.tabs.setCurrentIndex(0); self.btn_run.setText("Hesaplanıyor..."); self.btn_run.setEnabled(False)
+        
+        self.tabs.setCurrentIndex(0); 
+        self.btn_run.setText("Hesaplanıyor..."); 
+        self.btn_run.setEnabled(False)
         self.path_box.setText("Algoritma çalışıyor, lütfen bekleyin...")
+        
         self.worker = RoutingWorker("SINGLE", key, self.manager, s, d, w, bw)
-        self.worker.finished_single.connect(self.on_single_done); self.worker.error.connect(self.on_error); self.worker.start()
-
+        self.worker.finished_single.connect(self.on_single_done); 
+        self.worker.error.connect(self.on_error); 
+        self.worker.start()
     def on_single_done(self, path, cost, metrics):
         self.btn_run.setText("HESAPLA VE ÇİZ"); self.btn_run.setEnabled(True)
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text())
@@ -808,7 +844,16 @@ if __name__ == "__main__":
         QPushButton:hover {{ background-color: {THEME['BUTTON_HOVER']}; }}
         QPushButton#compareBtn {{ background-color: {THEME['BTN_COMPARE']}; }}
         QPushButton#compareBtn:hover {{ background-color: #059669; }}
-        QLineEdit, QComboBox, QPlainTextEdit {{ background-color: #262c33; border: 1px solid {THEME['BORDER']}; border-radius: 4px; padding: 4px; color: white; }}
+        
+        /* BURAYA QSpinBox EKLEDİK: Böylece seed kutusu da diğerleri gibi koyu olacak */
+        QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ 
+            background-color: #262c33; 
+            border: 1px solid {THEME['BORDER']}; 
+            border-radius: 4px; 
+            padding: 4px; 
+            color: white; 
+        }}
+        
         QFrame#resultCard {{ background-color: {THEME['CARD_BG']}; border: 1px solid {THEME['BORDER']}; border-radius: 8px; }}
         QSlider::groove:horizontal {{ height: 4px; background: {THEME['BORDER']}; border-radius: 2px; }}
         QSlider::handle:horizontal {{ width: 14px; margin: -5px 0; border-radius: 7px; background: {THEME['BUTTON']}; }}
