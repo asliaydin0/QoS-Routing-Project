@@ -571,7 +571,7 @@ class ComparisonCanvas(FigureCanvas):
 class Window(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QoS Yönlendirme Simülatörü - Proje Teslim Sürümü")
+        self.setWindowTitle("QoS Yönlendirme Simülatörü")
         self.resize(1450, 850)
         self.last_results = None 
         self.manager = None; self.G = nx.Graph() 
@@ -660,7 +660,7 @@ class Window(QtWidgets.QWidget):
         self.scenario_combo.currentIndexChanged.connect(self.on_scenario_changed)
         l_route.addRow("Talep Listesi:", self.scenario_combo)
         self.src_edit = QtWidgets.QLineEdit("0"); self.dst_edit = QtWidgets.QLineEdit("1")
-        l_route.addRow("Kaynak (Sol Tık):", self.src_edit); l_route.addRow("Hedef (Sağ Tık):", self.dst_edit)
+        l_route.addRow("Kaynak:", self.src_edit); l_route.addRow("Hedef:", self.dst_edit)
         gb_route.setLayout(l_route); sidebar.addWidget(gb_route)
 
         gb_opt = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları"); l_opt = QtWidgets.QVBoxLayout()

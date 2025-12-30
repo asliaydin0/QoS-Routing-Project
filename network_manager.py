@@ -29,6 +29,40 @@ class NetworkManager:
             df_edges = pd.read_csv(edge_file, sep=None, engine='python')
             df_edges.columns = [c.strip().lower() for c in df_edges.columns]
 
+            # ============================================================
+            # --- BAŞLANGIÇ: Çift Yönlü (Symmetric) Yol Yaması ---
+            # ============================================================
+            # Bu kısım, tek yönlü olan veri setini çift yönlüye çevirir.
+            # Böylece 159->177 varsa, 177->159 da otomatik oluşur.
+            
+            try:
+                # 1. Mevcut verinin kopyasını al
+                df_reverse = df_edges.copy()
+                
+                # 2. Sütun isimlerini tespit et (İlk sütun src, ikinci dst varsayılır)
+                col_src = df_edges.columns[0]
+                col_dst = df_edges.columns[1]
+                
+                # 3. Kaynak ve Hedef sütunlarının isimlerini değiştir (Swap)
+                # Diğer özellikler (bant genişliği, gecikme vb.) aynı kalır
+                df_reverse = df_reverse.rename(columns={col_src: col_dst, col_dst: col_src})
+                
+                # 4. Orijinal tablo ile ters yolları birleştir
+                df_edges = pd.concat([df_edges, df_reverse], ignore_index=True)
+                
+                # 5. Olası kopyaları temizle (Aynı yol iki kere eklenmesin)
+                df_edges = df_edges.drop_duplicates(subset=[col_src, col_dst])
+                
+                print("Bilgi: Ağ topolojisi çift yönlü (simetrik) hale getirildi.")
+                
+            except Exception as e:
+                print(f"Uyarı: Çift yönlü yama uygulanırken hata oluştu: {e}")
+                # Hata olsa bile orijinal veriyle devam eder, program çökmez.
+
+            # ============================================================
+            # --- BİTİŞ: Yama Tamamlandı ---
+            # ============================================================
+
             for _, row in df_edges.iterrows():
                 u = int(row.iloc[0]) # Kaynak
                 v = int(row.iloc[1]) # Hedef
@@ -81,7 +115,7 @@ class NetworkManager:
             node_data = self.G.nodes[node]
             total_delay += node_data.get('processing_delay', 0)
             r = node_data.get('reliability', 1.0)
-            rel_cost_   log += -math.log(r) if r > 0 else 100
+            rel_cost_log += -math.log(r) if r > 0 else 100
 
         # --- 2. Bağlantı Maliyetleri ---
         min_path_bw = float('inf') # Yol üzerindeki darboğaz bant genişliği
@@ -97,23 +131,21 @@ class NetworkManager:
             bw = edge_data.get('bandwidth', 0.1)
             if bw < min_path_bw: min_path_bw = bw
             
-            # Gecikme [cite: 41]
+            # Gecikme
             total_delay += edge_data.get('delay', 0)
             
-            # Güvenilirlik [cite: 52]
+            # Güvenilirlik
             r_link = edge_data.get('reliability', 1.0)
             rel_cost_log += -math.log(r_link) if r_link > 0 else 100
             
-            # Kaynak Kullanımı [cite: 57]
+            # Kaynak Kullanımı
             res_cost += (1000.0 / bw)
 
         # KISIT KONTROLÜ: Eğer darboğaz < istenen bant genişliği ise cezalandır
         if requested_bw > 0 and min_path_bw < requested_bw:
             penalty = 1000000 # Çok büyük bir ceza
 
-        # Ağırlıklı Toplam [cite: 66]
-        # delay, reliability ve resource değerlerini normalize etmek gerekebilir 
-        # ama proje basit toplama öneriyor.
+        # Ağırlıklı Toplam
         raw_cost = (w_d * total_delay) + (w_r * rel_cost_log) + (w_res * res_cost)
         total_cost = raw_cost + penalty
         

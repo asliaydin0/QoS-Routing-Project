@@ -74,7 +74,10 @@ if __name__ == "__main__":
                 scenario_res_costs = []
                 scenario_times = []
                 
+                print(f"    - Case {idx + 1}/{len(test_cases)} (Src: {src} -> Dst: {dst})")
+                
                 for rep in range(REPETITIONS):
+                    print(f"      .. Rep {rep + 1}/{REPETITIONS}", end="\r", flush=True) 
                     start_time = time.time()
                     
                     # Instantiate optimizer
@@ -86,7 +89,12 @@ if __name__ == "__main__":
                     duration = time.time() - start_time
                     
                     if path:
-                        scenario_costs.append(cost)
+                        # Consistency with GUI: Clean the cost (remove penalty) for statistics
+                        clean_cost = cost
+                        if cost > 1000000:
+                            clean_cost -= 1000000
+                        scenario_costs.append(clean_cost)
+                        
                         scenario_delays.append(metrics.get('delay', float('inf')))
                         scenario_reliabilities.append(metrics.get('rel_prob', 0.0))
                         scenario_res_costs.append(metrics.get('res_cost', float('inf')))
