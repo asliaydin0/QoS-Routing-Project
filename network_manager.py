@@ -33,7 +33,6 @@ class NetworkManager:
             # --- BAŞLANGIÇ: Çift Yönlü (Symmetric) Yol Yaması ---
             # ============================================================
             # Bu kısım, tek yönlü olan veri setini çift yönlüye çevirir.
-            # Böylece 159->177 varsa, 177->159 da otomatik oluşur.
             
             try:
                 # 1. Mevcut verinin kopyasını al
@@ -44,7 +43,6 @@ class NetworkManager:
                 col_dst = df_edges.columns[1]
                 
                 # 3. Kaynak ve Hedef sütunlarının isimlerini değiştir (Swap)
-                # Diğer özellikler (bant genişliği, gecikme vb.) aynı kalır
                 df_reverse = df_reverse.rename(columns={col_src: col_dst, col_dst: col_src})
                 
                 # 4. Orijinal tablo ile ters yolları birleştir
@@ -57,7 +55,7 @@ class NetworkManager:
                 
             except Exception as e:
                 print(f"Uyarı: Çift yönlü yama uygulanırken hata oluştu: {e}")
-                # Hata olsa bile orijinal veriyle devam eder, program çökmez.
+                # Hata olsa bile orijinal veriyle devam eder.
 
             # ============================================================
             # --- BİTİŞ: Yama Tamamlandı ---
@@ -94,7 +92,7 @@ class NetworkManager:
 
     def calculate_path_cost(self, path, weights, requested_bw=0):
         """
-        PDF Madde 3 ve 4'teki formüllere göre maliyet hesabı.
+        PDF Madde 3 ve 4'teki formüllere göre DÜZELTİLMİŞ maliyet hesabı.
         weights: (w_delay, w_reliability, w_resource)
         requested_bw: Talep edilen bant genişliği (Constraint)
         """
@@ -106,53 +104,73 @@ class NetworkManager:
         total_delay = 0       
         rel_cost_log = 0          
         res_cost = 0   
-        
-        # Ceza Puanı (Penalty): Eğer yolun bant genişliği yetersizse maliyeti sonsuz yap
         penalty = 0
 
-        # --- 1. Düğüm Maliyetleri (Ara düğümler) ---
+        # --- 1. Düğüm Gecikmesi (Processing Delay) ---
+        # PDF Madde 3.1: "Kaynak S ve Hedef D hariç"
+        # Bu yüzden sadece ara düğümleri (slice 1:-1) geziyoruz.
         for node in path[1:-1]: 
             node_data = self.G.nodes[node]
             total_delay += node_data.get('processing_delay', 0)
-            r = node_data.get('reliability', 1.0)
-            rel_cost_log += -math.log(r) if r > 0 else 100
 
-        # --- 2. Bağlantı Maliyetleri ---
-        min_path_bw = float('inf') # Yol üzerindeki darboğaz bant genişliği
+        # --- 2. Düğüm Güvenilirliği (Node Reliability) ---
+        # PDF Madde 3.2: P yolundaki TÜM düğümler (k in P)
+        # S ve D düğümleri de güvenilirlik hesabına katılmalıdır.
+        for node in path:
+            node_data = self.G.nodes[node]
+            r = node_data.get('reliability', 1.0)
+            # Logaritma alırken 0 hatasından kaçınmak için kontrol
+            if r > 0:
+                rel_cost_log += -math.log(r)
+            else:
+                rel_cost_log += 100 # Güvenilirlik 0 ise çok yüksek ceza
+
+        # --- 3. Bağlantı (Link) Maliyetleri ---
+        min_path_bw = float('inf') 
 
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
+            
+            # Hata kontrolü: Bağlantı yoksa
             if not self.G.has_edge(u, v):
-                return float('inf'), {} # Geçersiz yol
+                return float('inf'), {}
 
             edge_data = self.G[u][v]
             
-            # Bant Genişliği Kontrolü
-            bw = edge_data.get('bandwidth', 0.1)
+            # Bant Genişliği
+            bw = edge_data.get('bandwidth', 0.1) # 0'a bölme hatası olmasın
             if bw < min_path_bw: min_path_bw = bw
             
-            # Gecikme
+            # Link Gecikmesi (PDF 3.1: Tüm linkler dahildir)
             total_delay += edge_data.get('delay', 0)
             
-            # Güvenilirlik
+            # Link Güvenilirliği (PDF 3.2: Tüm linkler dahildir)
             r_link = edge_data.get('reliability', 1.0)
-            rel_cost_log += -math.log(r_link) if r_link > 0 else 100
+            if r_link > 0:
+                rel_cost_log += -math.log(r_link)
+            else:
+                rel_cost_log += 100
             
-            # Kaynak Kullanımı
+            # Kaynak Kullanımı (PDF 3.3)
+            # Formül: 1 Gbps / Bandwidth
+            # Varsayım: Veri setindeki BW 'Mbps' ise 1000/bw doğrudur.
             res_cost += (1000.0 / bw)
 
-        # KISIT KONTROLÜ: Eğer darboğaz < istenen bant genişliği ise cezalandır
+        # KISIT KONTROLÜ
+        # Eğer yolun darboğazı (min_path_bw) talep edilen bant genişliğinden (requested_bw)
+        # küçükse, bu yol geçersiz sayılır (Penalty).
         if requested_bw > 0 and min_path_bw < requested_bw:
-            penalty = 1000000 # Çok büyük bir ceza
+            penalty = 1000000 
 
-        # Ağırlıklı Toplam
+        # Ağırlıklı Toplam Hesaplama
+        # PDF Madde 4: W_delay * Delay + W_rel * RelCost + W_res * ResCost
         raw_cost = (w_d * total_delay) + (w_r * rel_cost_log) + (w_res * res_cost)
         total_cost = raw_cost + penalty
         
         metrics = {
             "delay": total_delay,
-            "rel_prob": math.exp(-rel_cost_log), # Gerçek olasılık (0-1 arası)
-            "rel_cost": rel_cost_log,            # Logaritmik maliyet
+            "rel_prob": math.exp(-rel_cost_log), # e^(-cost) gerçek güvenilirlik oranını verir
+            "rel_cost": rel_cost_log,            # Minimizasyon için kullanılan logaritmik değer
             "res_cost": res_cost,
             "min_bw": min_path_bw,
             "total_cost": total_cost,
