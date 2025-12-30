@@ -610,7 +610,7 @@ class Window(QtWidgets.QWidget):
         if reply == QtWidgets.QMessageBox.Yes:
             self.btn_batch.setEnabled(False)
             self.btn_batch.setText("Test Yapılıyor... (%0)")
-            w = tuple(sl.value()/100 for sl in self.sliders)
+            w = tuple(sb.value()/100 for sb in self.weight_inputs)
             
             self.batch_worker = BatchTestWorker(self.manager, self.manager.demands, w)
             self.batch_worker.progress_signal.connect(self.update_batch_progress)
@@ -720,8 +720,8 @@ class Window(QtWidgets.QWidget):
         gb_opt = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları")
         l_opt = QtWidgets.QVBoxLayout()
         
-        self.sliders = []       # Slider nesnelerini tutar
-        self.slider_labels = [] # Sayı yazan etiketleri tutar
+        # Elle girilebilen ağırlık kutuları (yüzde 0-100)
+        self.weight_inputs = []  # QSpinBox nesnelerini tutar
         
         # Varsayılan değerler (Toplamı mutlaka 100 olmalı)
         defaults = [("Gecikme", 40), ("Güvenilirlik", 30), ("Kaynak", 30)]
@@ -730,31 +730,34 @@ class Window(QtWidgets.QWidget):
             row = QtWidgets.QHBoxLayout()
             lbl_title = QtWidgets.QLabel(t)
             
-            # Değeri gösteren etiket
-            lbl_val = QtWidgets.QLabel(str(v))
-            lbl_val.setFixedWidth(25)
-            lbl_val.setAlignment(QtCore.Qt.AlignCenter)
+
             
             # Slider ayarları
-            s = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            s.setRange(0, 100)
-            s.setValue(v)
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(0, 100)
+            spin.setValue(v)
+            spin.setFixedWidth(90)
+            spin.setSuffix(" %")
             
             # ÖNEMLİ: Slider değişince 'balance_sliders' fonksiyonu çalışsın
-            s.valueChanged.connect(self.balance_sliders)
+            spin.valueChanged.connect(self.on_weight_changed)
             
             # Etiketin de güncellenmesi lazım (Lambda sadece görsel güncelleme yapar)
             # Asıl matematiksel dengeyi balance_sliders yapacak.
-            s.valueChanged.connect(lambda val, l=lbl_val: l.setText(str(val)))
+
             
             row.addWidget(lbl_title)
-            row.addWidget(s)
-            row.addWidget(lbl_val)
+            row.addStretch()
+            row.addWidget(spin)
+
             l_opt.addLayout(row)
             
-            self.sliders.append(s)
-            self.slider_labels.append(lbl_val)
+            self.weight_inputs.append(spin)
+
             
+        self.weights_note = QtWidgets.QLabel("Toplam %100 olmalı; elle girin. Toplam 100%'ü geçerse uyarı verir.")
+        self.weights_note.setStyleSheet("color:#a5b1c2; font-size:11px;")
+        l_opt.addWidget(self.weights_note)
         gb_opt.setLayout(l_opt)
         sidebar.addWidget(gb_opt)
 
@@ -793,8 +796,21 @@ class Window(QtWidgets.QWidget):
         self.btn_export = QtWidgets.QPushButton("Tekil Sonuç Kaydet"); self.btn_export.setStyleSheet("background-color: #4b5563; color: white; padding: 8px;")
         self.btn_export.clicked.connect(self.export_results); sidebar.addWidget(self.btn_export)
 
-        sidebar.addStretch(); w_side = QtWidgets.QWidget(); w_side.setLayout(sidebar); w_side.setFixedWidth(320)
-        main_layout.addWidget(w_side)
+        sidebar.addStretch()
+        w_side = QtWidgets.QWidget(); w_side.setLayout(sidebar)
+        # Responsive: sabit genişlik yerine minimum/maximum ve esnek boyutlandırma kullan
+        w_side.setMinimumWidth(260)
+        w_side.setMaximumWidth(420)
+        w_side.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        # Sol paneli kaydırılabilir yap (dikey kaydırma)
+        scroll_left = QtWidgets.QScrollArea()
+        scroll_left.setWidgetResizable(True)
+        scroll_left.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll_left.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll_left.setWidget(w_side)
+        scroll_left.setMinimumWidth(260)
+        scroll_left.setMaximumWidth(420)
+        main_layout.addWidget(scroll_left, 0)
 
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setStyleSheet("QTabWidget::pane { border: 0; } QTabBar::tab { background: #1e293b; color: #94a3b8; padding: 12px; margin-right: 4px; border-top-left-radius: 4px; border-top-right-radius: 4px; font-weight: bold; } QTabBar::tab:selected { background: #7b2cff; color: white; }")
@@ -833,64 +849,51 @@ class Window(QtWidgets.QWidget):
         self.path_box = QtWidgets.QTextEdit(); self.path_box.setReadOnly(True); self.path_box.setStyleSheet("background:#1f2937; color:#e5e7eb; border-radius:10px; padding:10px; font-size:14px; font-family: Consolas, monospace;")
         self.path_box.setPlaceholderText("Log kayıtları..."); right_layout.addWidget(self.path_box)
 
-        w_right = QtWidgets.QWidget(); w_right.setLayout(right_layout); w_right.setFixedWidth(280); main_layout.addWidget(w_right)
+        w_right = QtWidgets.QWidget(); w_right.setLayout(right_layout)
+        # Responsive: sabit genişlik kaldırıldı, minimum/maximum genişlik ve esneklik eklendi
+        w_right.setMinimumWidth(220)
+        w_right.setMaximumWidth(420)
+        w_right.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        main_layout.addWidget(w_right, 0)
 
         if self.scenario_combo.count() > 0: self.on_scenario_changed(0)
 
-    def balance_sliders(self):
+    def on_weight_changed(self):
         """
-        Sliderların toplamının her zaman 100 olmasını sağlayan akıllı dengeleyici.
-        Bir değer artarsa, diğerleri eşit oranda azalır.
+        Kullanıcı manuel değer girdiğinde toplamın 100'ü geçip geçmediğini kontrol eder.
+        Eğer toplam > 100 ise uyarı gösterir ve hesaplama butonlarını devre dışı bırakır.
         """
-        sender = self.sender() # Hangi slider değiştirildi?
-        if not sender or sender not in self.sliders:
+        sender = self.sender()
+        if not sender or sender not in self.weight_inputs:
             return
 
-        # Değişiklik yapan sliderı bul
-        changed_idx = self.sliders.index(sender)
-        new_val = sender.value()
-        
-        # Diğer sliderları listele
-        other_sliders = [s for i, s in enumerate(self.sliders) if i != changed_idx]
-        other_labels = [l for i, l in enumerate(self.slider_labels) if i != changed_idx]
-        
-        # Kalan bütçe ne kadar? (100 - Yeni Değer)
-        remaining = 100 - new_val
-        
-        # Diğerlerinin şu anki toplamı
-        current_others_sum = sum(s.value() for s in other_sliders)
-        
-        # Sonsuz döngüyü engelle (Sinyalleri kapat)
-        for s in other_sliders: s.blockSignals(True)
-        
-        if current_others_sum == 0:
-            # Eğer diğerleri 0 ise ve bütçe arttıysa, kalanı eşit dağıt
-            if remaining > 0:
-                share = remaining // len(other_sliders)
-                remainder = remaining % len(other_sliders)
-                for i, s in enumerate(other_sliders):
-                    val = share + (1 if i < remainder else 0)
-                    s.setValue(val)
-                    other_labels[i].setText(str(val))
-        else:
-            # Orantılı dağıtım yap (Biri 30, biri 10 ise; 30 olan daha çok etkilenir)
-            # Bu sayede oranlar bozulmaz.
-            total_distributed = 0
-            for i, s in enumerate(other_sliders):
-                # Formül: (Kendi Değeri / Diğerlerinin Toplamı) * Kalan Bütçe
-                ratio = s.value() / current_others_sum
-                new_s_val = int(remaining * ratio)
-                
-                # Son eleman, yuvarlama hatalarını toplar (Tam 100 olsun diye)
-                if i == len(other_sliders) - 1:
-                    new_s_val = remaining - total_distributed
-                
-                s.setValue(new_s_val)
-                other_labels[i].setText(str(new_s_val))
-                total_distributed += new_s_val
+        total = sum(s.value() for s in self.weight_inputs)
 
-        # Sinyalleri tekrar aç
-        for s in other_sliders: s.blockSignals(False)
+        # Eğer daha önceden geçerliydi ve şimdi hatalı olduysa, bir kez uyarı göster
+        if total > 100:
+            # Uyarıyı sadece bir kere göstermek için flags kullan
+            if not getattr(self, '_weights_invalid', False):
+                QtWidgets.QMessageBox.warning(self, "Hata", f"Ağırlıkların toplamı {total}%. Toplam 100%\'ü geçemez.")
+                self._weights_invalid = True
+            # Görsel uyarı
+            if hasattr(self, 'weights_note'):
+                self.weights_note.setText(f"Geçersiz: Toplam {total}% (en fazla 100%)")
+                self.weights_note.setStyleSheet("color:#ef4444; font-size:11px;")
+            # Butonları devre dışı bırak
+            if hasattr(self, 'btn_run'): self.btn_run.setEnabled(False)
+            if hasattr(self, 'btn_compare'): self.btn_compare.setEnabled(False)
+            if hasattr(self, 'btn_batch'): self.btn_batch.setEnabled(False)
+        else:
+            # Geçerli duruma geri döndü
+            if getattr(self, '_weights_invalid', False):
+                self._weights_invalid = False
+                if hasattr(self, 'weights_note'):
+                    self.weights_note.setText("Toplam %100 olmalı; elle girin. Toplam 100%\'ü geçerse uyarı verir.")
+                    self.weights_note.setStyleSheet("color:#a5b1c2; font-size:11px;")
+            # Butonları aktif et
+            if hasattr(self, 'btn_run'): self.btn_run.setEnabled(True)
+            if hasattr(self, 'btn_compare'): self.btn_compare.setEnabled(True)
+            if hasattr(self, 'btn_batch'): self.btn_batch.setEnabled(True)
 
     # --- TEKİL VE KIYASLAMA İŞLEVLERİ ---
     def run_single(self):
@@ -919,10 +922,10 @@ class Window(QtWidgets.QWidget):
             bw = float(self.bw_edit.text()) # Kutudaki yazıyı sayıya çevir
             # -----------------------------
 
-            weights = [s.value() for s in self.sliders]
+            weights = [s.value() for s in self.weight_inputs]
         except: return
 
-        w = tuple(sl.value()/100 for sl in self.sliders)
+        w = tuple(sb.value()/100 for sb in self.weight_inputs)
         key = ["GA", "RL", "ABC", "SA"][self.algo_combo.currentIndex()]
         
         self.tabs.setCurrentIndex(0)
@@ -959,7 +962,7 @@ class Window(QtWidgets.QWidget):
     def run_compare(self):
         try: s, d = int(self.src_edit.text()), int(self.dst_edit.text()); bw = getattr(self, 'current_bw_demand', 0)
         except: return
-        w = tuple(sl.value()/100 for sl in self.sliders)
+        w = tuple(sb.value()/100 for sb in self.weight_inputs)
         self.tabs.setCurrentIndex(1); self.btn_compare.setText("Kıyaslanıyor..."); self.btn_compare.setEnabled(False)
         self.worker = RoutingWorker("COMPARE", "ALL", self.manager, s, d, w, bw)
         self.worker.finished_batch.connect(self.on_batch_done); self.worker.error.connect(self.on_error); self.worker.start()
