@@ -57,7 +57,7 @@ THEME = {
     "GRAPH_BG": "#111828",      
     "BORDER": "#3c4654",        
     "TEXT": "#f1f2f6",          
-    "BUTTON": "#7b2cff",        
+    "BUTTON": "#b083ff",        
     "BUTTON_HOVER": "#6300A5",
     "BTN_COMPARE": "#10b981",
     "BTN_BATCH": "#f59e0b",     
@@ -482,14 +482,14 @@ class GraphCanvas(FigureCanvas):
         self.G = G; self.ax.clear(); self.ax.set_facecolor(THEME["GRAPH_BG"])
         self.highlight_artists = []; self.last_hovered_edge = None; self.last_hovered_node = None
         
-        COLOR_BG_NODE = "#60a5fa"; COLOR_BG_EDGE = "#475569"
+        COLOR_BG_NODE = "#a6d5eb"; COLOR_BG_EDGE = "#636E7E"
         COLOR_SRC = "#22c55e"; COLOR_DST = "#ef4444"; COLOR_PATH = "#00e5ff"
         
         if not self.pos or set(self.pos.keys()) != set(G.nodes()):
             try: self.pos = nx.kamada_kawai_layout(G)
             except: self.pos = nx.spring_layout(G, seed=42)
 
-        nx.draw_networkx_edges(G, self.pos, edge_color=COLOR_BG_EDGE, width=0.8, alpha=0.4, ax=self.ax, arrows=False)
+        nx.draw_networkx_edges(G, self.pos, edge_color=COLOR_BG_EDGE, width=0.8, alpha=0.1, ax=self.ax, arrows=False)
         
         all_nodes = list(G.nodes()); path_nodes_set = set(path) if path else set()
         special_nodes = {src, dst} if src is not None else set()
@@ -591,6 +591,7 @@ class Window(QtWidgets.QWidget):
         if data:
             self.src_edit.setText(str(data['src'])); self.dst_edit.setText(str(data['dst'])); self.current_bw_demand = data['bw']
             self.canvas_net.draw_graph(self.G, path=None, src=data['src'], dst=data['dst'])
+            self.bw_edit.setText(str(data['bw']))
 
     def set_node_from_click(self, node_id, mode):
         if mode == "src": self.src_edit.setText(str(node_id))
@@ -645,33 +646,117 @@ class Window(QtWidgets.QWidget):
             except Exception as e: QtWidgets.QMessageBox.critical(self, "Hata", str(e))
 
     def build_ui(self):
-        main_layout = QtWidgets.QHBoxLayout(self); main_layout.setContentsMargins(10, 10, 10, 10); main_layout.setSpacing(15)
-        sidebar = QtWidgets.QVBoxLayout(); sidebar.setSpacing(15)
+        # Ana Layout
+        main_layout = QtWidgets.QHBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+        
+        # ==========================================================
+        # 1. SOL PANEL (KONTROLLER)
+        # ==========================================================
+        sidebar = QtWidgets.QVBoxLayout()
+        sidebar.setSpacing(15)
 
-        gb_algo = QtWidgets.QGroupBox("Algoritma Seçimi"); l_algo = QtWidgets.QVBoxLayout()
-        self.algo_combo = QtWidgets.QComboBox(); self.algo_combo.addItems(["Genetik Algoritma (GA)", "Q-Learning (RL)", "Yapay Arı (ABC)", "Benzetimli Tavlama (SA)"])
-        l_algo.addWidget(self.algo_combo); gb_algo.setLayout(l_algo); sidebar.addWidget(gb_algo)
+        # -- Algoritma Seçimi --
+        gb_algo = QtWidgets.QGroupBox("Algoritma Seçimi")
+        l_algo = QtWidgets.QVBoxLayout()
+        self.algo_combo = QtWidgets.QComboBox()
+        self.algo_combo.addItems(["Genetik Algoritma (GA)", "Q-Learning (RL)", "Yapay Arı (ABC)", "Benzetimli Tavlama (SA)"])
+        l_algo.addWidget(self.algo_combo)
+        gb_algo.setLayout(l_algo)
+        sidebar.addWidget(gb_algo)
 
-        gb_route = QtWidgets.QGroupBox("Rota & Talep"); l_route = QtWidgets.QFormLayout()
+        # -- Rota ve Talep (GÜNCELLENEN KISIM) --
+        gb_route = QtWidgets.QGroupBox("Talep")
+        
+        # FormLayout yerine VBoxLayout kullanıyoruz ki daha esnek olsun
+        l_route = QtWidgets.QVBoxLayout() 
+        l_route.setSpacing(10) # Elemanlar arası boşluk
+
+        # 1. Talep Listesi (Etiket üstte, Kutu altta)
+        l_route.addWidget(QtWidgets.QLabel("Talep Listesi:"))
         self.scenario_combo = QtWidgets.QComboBox()
         if self.manager and self.manager.demands:
-            for i, dem in enumerate(self.manager.demands): self.scenario_combo.addItem(f"Senaryo {i+1}: S:{dem['src']} -> D:{dem['dst']} | {dem['bw']} Mbps", dem)
-        else: self.scenario_combo.addItem("Manuel Giriş", {'src':0, 'dst':1, 'bw':0})
+            for i, dem in enumerate(self.manager.demands): 
+                self.scenario_combo.addItem(f"Senaryo {i+1}: S:{dem['src']} -> D:{dem['dst']} | {dem['bw']} Mbps", dem)
+        else: 
+            self.scenario_combo.addItem("Manuel Giriş", {'src':0, 'dst':1, 'bw':0})
         self.scenario_combo.currentIndexChanged.connect(self.on_scenario_changed)
-        l_route.addRow("Talep Listesi:", self.scenario_combo)
-        self.src_edit = QtWidgets.QLineEdit("0"); self.dst_edit = QtWidgets.QLineEdit("1")
-        l_route.addRow("Kaynak (Sol Tık):", self.src_edit); l_route.addRow("Hedef (Sağ Tık):", self.dst_edit)
-        gb_route.setLayout(l_route); sidebar.addWidget(gb_route)
+        l_route.addWidget(self.scenario_combo)
+        
+        # 2. Kaynak ve Hedef (Yan Yana)
+        h_src_dst = QtWidgets.QHBoxLayout()
+        h_src_dst.setSpacing(10)
 
-        gb_opt = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları"); l_opt = QtWidgets.QVBoxLayout()
-        self.sliders = []
-        for t, v in [("Gecikme", 40), ("Güvenilirlik", 30), ("Kaynak", 30)]:
-            row = QtWidgets.QHBoxLayout(); lbl = QtWidgets.QLabel(str(v)); lbl.setFixedWidth(25)
-            s = QtWidgets.QSlider(QtCore.Qt.Horizontal); s.setValue(v); s.setRange(0, 100)
-            s.valueChanged.connect(lambda val, l=lbl: l.setText(str(val)))
-            row.addWidget(QtWidgets.QLabel(t)); row.addWidget(s); row.addWidget(lbl)
-            l_opt.addLayout(row); self.sliders.append(s)
-        gb_opt.setLayout(l_opt); sidebar.addWidget(gb_opt)
+        # Kaynak Sütunu
+        v_src = QtWidgets.QVBoxLayout()
+        v_src.setSpacing(2) # Etiket ile kutu birbirine yakın olsun
+        v_src.addWidget(QtWidgets.QLabel("Kaynak (S):"))
+        self.src_edit = QtWidgets.QLineEdit("0")
+        v_src.addWidget(self.src_edit)
+        h_src_dst.addLayout(v_src)
+
+        # Hedef Sütunu
+        v_dst = QtWidgets.QVBoxLayout()
+        v_dst.setSpacing(2)
+        v_dst.addWidget(QtWidgets.QLabel("Hedef (D):"))
+        self.dst_edit = QtWidgets.QLineEdit("1")
+        v_dst.addWidget(self.dst_edit)
+        h_src_dst.addLayout(v_dst)
+
+        l_route.addLayout(h_src_dst)
+
+        # 3. Bant Genişliği (En Altta)
+        l_route.addWidget(QtWidgets.QLabel("Bant Genişliği (Mbps):"))
+        self.bw_edit = QtWidgets.QLineEdit("0") 
+        if hasattr(self, 'current_bw_demand'): self.bw_edit.setText(str(self.current_bw_demand))
+        l_route.addWidget(self.bw_edit)
+        
+        gb_route.setLayout(l_route)
+        sidebar.addWidget(gb_route)
+
+        # -- Optimizasyon Ağırlıkları (Gecikme vs Güvenlik) --
+        # BURAYI GÜNCELLİYORUZ
+        gb_opt = QtWidgets.QGroupBox("Optimizasyon Ağırlıkları")
+        l_opt = QtWidgets.QVBoxLayout()
+        
+        self.sliders = []       # Slider nesnelerini tutar
+        self.slider_labels = [] # Sayı yazan etiketleri tutar
+        
+        # Varsayılan değerler (Toplamı mutlaka 100 olmalı)
+        defaults = [("Gecikme", 40), ("Güvenilirlik", 30), ("Kaynak", 30)]
+        
+        for t, v in defaults:
+            row = QtWidgets.QHBoxLayout()
+            lbl_title = QtWidgets.QLabel(t)
+            
+            # Değeri gösteren etiket
+            lbl_val = QtWidgets.QLabel(str(v))
+            lbl_val.setFixedWidth(25)
+            lbl_val.setAlignment(QtCore.Qt.AlignCenter)
+            
+            # Slider ayarları
+            s = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            s.setRange(0, 100)
+            s.setValue(v)
+            
+            # ÖNEMLİ: Slider değişince 'balance_sliders' fonksiyonu çalışsın
+            s.valueChanged.connect(self.balance_sliders)
+            
+            # Etiketin de güncellenmesi lazım (Lambda sadece görsel güncelleme yapar)
+            # Asıl matematiksel dengeyi balance_sliders yapacak.
+            s.valueChanged.connect(lambda val, l=lbl_val: l.setText(str(val)))
+            
+            row.addWidget(lbl_title)
+            row.addWidget(s)
+            row.addWidget(lbl_val)
+            l_opt.addLayout(row)
+            
+            self.sliders.append(s)
+            self.slider_labels.append(lbl_val)
+            
+        gb_opt.setLayout(l_opt)
+        sidebar.addWidget(gb_opt)
 
           # --- EKLEMENİZ GEREKEN KISIM ---
         # --- İŞARETLENEBİLİR (CHECKABLE) SEED GRUBU ---
@@ -752,6 +837,61 @@ class Window(QtWidgets.QWidget):
 
         if self.scenario_combo.count() > 0: self.on_scenario_changed(0)
 
+    def balance_sliders(self):
+        """
+        Sliderların toplamının her zaman 100 olmasını sağlayan akıllı dengeleyici.
+        Bir değer artarsa, diğerleri eşit oranda azalır.
+        """
+        sender = self.sender() # Hangi slider değiştirildi?
+        if not sender or sender not in self.sliders:
+            return
+
+        # Değişiklik yapan sliderı bul
+        changed_idx = self.sliders.index(sender)
+        new_val = sender.value()
+        
+        # Diğer sliderları listele
+        other_sliders = [s for i, s in enumerate(self.sliders) if i != changed_idx]
+        other_labels = [l for i, l in enumerate(self.slider_labels) if i != changed_idx]
+        
+        # Kalan bütçe ne kadar? (100 - Yeni Değer)
+        remaining = 100 - new_val
+        
+        # Diğerlerinin şu anki toplamı
+        current_others_sum = sum(s.value() for s in other_sliders)
+        
+        # Sonsuz döngüyü engelle (Sinyalleri kapat)
+        for s in other_sliders: s.blockSignals(True)
+        
+        if current_others_sum == 0:
+            # Eğer diğerleri 0 ise ve bütçe arttıysa, kalanı eşit dağıt
+            if remaining > 0:
+                share = remaining // len(other_sliders)
+                remainder = remaining % len(other_sliders)
+                for i, s in enumerate(other_sliders):
+                    val = share + (1 if i < remainder else 0)
+                    s.setValue(val)
+                    other_labels[i].setText(str(val))
+        else:
+            # Orantılı dağıtım yap (Biri 30, biri 10 ise; 30 olan daha çok etkilenir)
+            # Bu sayede oranlar bozulmaz.
+            total_distributed = 0
+            for i, s in enumerate(other_sliders):
+                # Formül: (Kendi Değeri / Diğerlerinin Toplamı) * Kalan Bütçe
+                ratio = s.value() / current_others_sum
+                new_s_val = int(remaining * ratio)
+                
+                # Son eleman, yuvarlama hatalarını toplar (Tam 100 olsun diye)
+                if i == len(other_sliders) - 1:
+                    new_s_val = remaining - total_distributed
+                
+                s.setValue(new_s_val)
+                other_labels[i].setText(str(new_s_val))
+                total_distributed += new_s_val
+
+        # Sinyalleri tekrar aç
+        for s in other_sliders: s.blockSignals(False)
+
     # --- TEKİL VE KIYASLAMA İŞLEVLERİ ---
     def run_single(self):
         # --- SEED KONTROLÜ VE DEBUG ---
@@ -769,9 +909,17 @@ class Window(QtWidgets.QWidget):
             print(">>> RASTGELE MOD: Her seferinde farklı sonuç bekleniyor.")
         # ------------------------------
 
-        try: 
-            s, d = int(self.src_edit.text()), int(self.dst_edit.text())
-            bw = getattr(self, 'current_bw_demand', 0)
+        try:
+            algo = self.algo_combo.currentText().split("(")[1].replace(")", "")
+            
+            # --- BURAYI DEĞİŞTİRİYORUZ ---
+            # Eskiden sadece src/dst alıyorduk, şimdi bw'yi de kutudan alıyoruz
+            s = int(self.src_edit.text())
+            d = int(self.dst_edit.text())
+            bw = float(self.bw_edit.text()) # Kutudaki yazıyı sayıya çevir
+            # -----------------------------
+
+            weights = [s.value() for s in self.sliders]
         except: return
 
         w = tuple(sl.value()/100 for sl in self.sliders)
@@ -840,65 +988,117 @@ class Window(QtWidgets.QWidget):
         self.path_box.setPlainText(f"HATA OLUŞTU:\n{msg}"); QtWidgets.QMessageBox.critical(self, "Hata", msg)
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv); app.setStyle("Fusion")
+    app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
     
-    # --- TİK İŞARETİ RESMİ (Beyaz renkli, kodun içine gömülü) ---
-    # Bu, harici bir dosya olmadan "✔" işaretini oluşturur.
-    CHECKMARK_ICON = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'/></svg>"
-
+    # --- OKUNABİLİRLİK ODAKLI TASARIM GÜNCELLEMESİ ---
     app.setStyleSheet(f"""
-        QWidget {{ background-color: {THEME['MAIN_BG']}; color: {THEME['TEXT']}; font-family: 'Segoe UI'; }}
-        
-        /* Grup Kutusu Çerçevesi */
-        QGroupBox {{ 
-            border: 2px solid {THEME['BORDER']}; 
-            border-radius: 6px; 
-            margin-top: 15px; 
-            padding: 10px; 
-            font-weight: bold; 
+        QWidget {{ 
+            background-color: {THEME['MAIN_BG']}; 
+            color: {THEME['TEXT']}; 
+            font-family: 'Segoe UI', sans-serif; 
+            font-size: 12px;
         }}
         
-        /* Mor Başlık */
+        /* PANELLER (Dış Çerçeveler) */
+        QFrame#panelFrame {{
+            background-color: transparent; 
+            border: 2px solid {THEME['BORDER']}; 
+            border-radius: 15px; 
+        }}
+
+        /* GRUP KUTULARI (Başlıklar) */
+        QGroupBox {{ 
+            font-size: 15px; 
+            font-weight: bold;
+            border: 1px solid {THEME['BORDER']}; 
+            border-radius: 8px; 
+            margin-top: 24px; 
+            padding: 15px; 
+            background-color: transparent; 
+        }}
+        
         QGroupBox::title {{ 
             subcontrol-origin: margin; 
-            left: 10px; 
+            subcontrol-position: top left; 
             padding: 0 5px; 
             color: {THEME['BUTTON']}; 
         }}
-
-        /* --- TİK KUTUSU (INDICATOR) TASARIMI --- */
-        /* Normal hali: İçi boş, etrafı mor çizgili */
-        QGroupBox::indicator {{
-            width: 18px;
-            height: 18px;
-            border: 2px solid {THEME['BUTTON']}; 
-            border-radius: 4px;
-            background-color: #262c33;
+        
+        /* GİRİŞ KUTULARI VE LİSTELER (Daha Belirgin) */
+        QLineEdit, QComboBox, QPlainTextEdit, QTextEdit {{ 
+            background-color: #1e293b; /* Arka planı bir tık açtık */
+            border: 1px solid #475569; /* Çerçeveyi belirginleştirdik */
+            border-radius: 6px; 
+            padding: 8px; /* İç boşluğu artırdık (Ferahlık için) */
+            color: white; 
+            font-weight: bold;
+            font-size: 13px; /* Yazıyı büyüttük */
+        }}
+        
+        /* Girdi kutusuna tıklayınca parlasın */
+        QLineEdit:focus, QComboBox:focus {{
+            border: 1px solid {THEME['BUTTON']};
+            background-color: #334155;
         }}
 
-        /* İŞARETLENDİĞİNDE: İçi mor dolar ve "✔" resmi gelir */
-        QGroupBox::indicator:checked {{
-            background-color: {THEME['BUTTON']};
-            border: 2px solid {THEME['BUTTON']};
-            image: url(\"{CHECKMARK_ICON}\"); /* İŞTE O TİK İŞARETİ BURADA */
+        /* BUTONLAR */
+        QPushButton {{ 
+            background-color: {THEME['BUTTON']}; 
+            border: none; 
+            border-radius: 6px; 
+            padding: 12px; /* Butonları biraz büyüttük */
+            font-weight: bold; 
+            font-size: 13px;
+            color: white; 
         }}
-        /* -------------------------------------- */
-
-        QPushButton {{ background-color: {THEME['BUTTON']}; border: none; border-radius: 5px; padding: 8px; font-weight: bold; color: white; }}
         QPushButton:hover {{ background-color: {THEME['BUTTON_HOVER']}; }}
+        
         QPushButton#compareBtn {{ background-color: {THEME['BTN_COMPARE']}; }}
         QPushButton#compareBtn:hover {{ background-color: #059669; }}
         
-        QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{ 
-            background-color: #262c33; 
-            border: 1px solid {THEME['BORDER']}; 
-            border-radius: 4px; 
-            padding: 4px; 
-            color: white; 
+        QPushButton#batchBtn {{ background-color: #f59e0b; color: black; }} 
+        QPushButton#batchBtn:hover {{ background-color: #d97706; }}
+        
+        QPushButton#saveBtn {{ background-color: #4b5563; }} 
+        QPushButton#saveBtn:hover {{ background-color: #374151; }}
+        
+        /* SLIDER (Daha Kalın ve Okunabilir) */
+        QSlider::groove:horizontal {{ 
+            height: 6px; /* Çizgiyi kalınlaştırdık */
+            background: #334155; 
+            border-radius: 3px; 
+        }}
+        QSlider::handle:horizontal {{ 
+            width: 10px; /* Tutacağı büyüttük */
+            height: 10px;
+            margin: -6px 0; 
+            border-radius: 9px; 
+            background: {THEME['BUTTON']}; 
+            border: 2px;
         }}
         
-        QFrame#resultCard {{ background-color: {THEME['CARD_BG']}; border: 1px solid {THEME['BORDER']}; border-radius: 8px; }}
-        QSlider::groove:horizontal {{ height: 4px; background: {THEME['BORDER']}; border-radius: 2px; }}
-        QSlider::handle:horizontal {{ width: 14px; margin: -5px 0; border-radius: 7px; background: {THEME['BUTTON']}; }}
+        /* ETİKETLER (Label) */
+        QLabel {{
+            color: #cbd5e1; /* Çok beyaz değil, göz yormayan gri */
+            font-weight: 500;
+        }}
+
+        /* DİĞERLERİ */
+        QFrame#resultCard, QFrame#metricCard {{ 
+            background-color: transparent; 
+            border: 1px solid {THEME['BORDER']}; 
+            border-radius: 8px; 
+        }}
+        
+        QTabWidget::pane {{ border: 0; }}
+        QTabBar::tab {{ background: #111828; color: #94a3b8; padding: 10px 20px; margin-right: 5px; border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; }}
+        QTabBar::tab:selected {{ background: {THEME['BUTTON']}; color: white; }}
+        
+        QScrollBar:vertical {{ border: none; background: #111828; width: 8px; margin: 0; }}
+        QScrollBar::handle:vertical {{ background: #4b5563; min-height: 20px; border-radius: 4px; }}
     """)
-    win = Window(); win.show(); sys.exit(app.exec_())
+    
+    win = Window()
+    win.show()
+    sys.exit(app.exec_())
