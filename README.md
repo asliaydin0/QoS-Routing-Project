@@ -79,7 +79,7 @@ Performans karşılaştırmaları:
 
 ---
 
-## 🛠️ Planlanan Özellikler (İlerledikçe Güncellenecek)
+## 🛠️ Planlanan Özellikler 
 
 - [+] 250 düğümlü rastgele ağ oluşturma  
 - [+] Düğüm ve bağlantı özelliklerinin atanması  
