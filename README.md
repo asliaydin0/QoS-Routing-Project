@@ -2,7 +2,6 @@
 
 Bu proje, Bilgisayar Ağları dersi kapsamında geliştirilen ve 250 düğümlü rastgele bir ağ üzerinde **en uygun rotayı** bulmayı amaçlayan bir çalışmadır. Projede, gecikme (delay), güvenilirlik (reliability) ve kaynak kullanımı (bandwidth cost) gibi QoS odaklı metrikler dikkate alınarak çok amaçlı bir optimizasyon yapılacaktır.
 
-Projenin ilerleyen aşamalarında iki farklı algoritma (ör. Genetik Algoritma, Karınca Kolonisi Optimizasyonu vb.) kullanılarak çözümlerin karşılaştırılması hedeflenmektedir.
 
 ---
 
@@ -17,24 +16,99 @@ Projenin ilerleyen aşamalarında iki farklı algoritma (ör. Genetik Algoritma,
 ---
 
 ## 🧩 Projede Kullanılacak Temel Metrikler
+Algoritmalar aşağıdaki QoS metriklerine göre değerlendirilmiştir:
 
-- **Delay (Gecikme)**: Bağlantı ve düğüm gecikmelerinin toplamı  
-- **Reliability (Güvenilirlik)**: Bağlantı ve düğümlerin hata toleransı  
-- **Resource / Bandwidth Cost**: Bant genişliğine göre maliyet  
+- Total Delay (Toplam Gecikme)
 
-Bu metrikler ileride ağırlıklı toplam yöntemi ile birleştirilecektir.
+- Reliability (Güvenilirlik)
+
+- Resource Cost (Kaynak Maliyeti)
+
+- Total Cost (Ağırlıklı Amaç Fonksiyonu)
+
+## 🧠 Kullanılan Algoritmalar
+
+Projede aşağıdaki algoritmalar uygulanmış ve karşılaştırılmıştır(Her algoritma aynı ağ senaryoları ve metrikler altında çalıştırılmıştır:
+
+-Genetik Algoritma (GA)
+
+-Q-Learning
+
+-Yapay Arı Kolonisi (ABC)
+
+-Benzetimli Tavlama (Simulated Annealing – SA)
+
+
+## 🖥️ Arayüz (GUI)
+
+=> PyQt5 tabanlı masaüstü arayüz
+
+=>NetworkX ve Matplotlib ile ağ görselleştirme
+
+Özellikler:
+
+-Algoritma seçimi
+
+-Kaynak–hedef (S–D) seçimi
+
+-Çoklu algoritma kıyaslama
+
+-Grafiksel performans analizi
+
+-En iyi algoritmanın otomatik önerilmesi
+
+
+## ⚙️ Kullanılan Teknolojiler ve Kütüphaneler
+
+-Python 3
+
+-PyQt5
+
+-NetworkX
+
+-Matplotlib
+
+-NumPy
+
+-Pandas
+
+
+## ▶️ Çalıştırma
+
+pip install -r requirements.txt
+
+python GUI.py
+
+## 🧪 Test ve Analiz
+
+=> Algoritmalar çoklu çalıştırmalar ile test edilmiştir
+
+=>Tutarlılık ve kararlılık analizi yapılmıştır
+
+Performans karşılaştırmaları:
+
+-Maliyet
+
+-Hesaplama süresi
+
+-Gecikme
+
+-Güvenilirlik
+
+=>Sonuçlar CSV dosyaları ve grafikler ile raporlanmıştır
+
 
 ---
 
 ## 🛠️ Planlanan Özellikler (İlerledikçe Güncellenecek)
 
-- [ ] 250 düğümlü rastgele ağ oluşturma  
-- [ ] Düğüm ve bağlantı özelliklerinin atanması  
-- [ ] Gecikme, güvenilirlik ve kaynak maliyet fonksiyonlarının yazılması  
-- [ ] En az iki optimizasyon algoritmasının eklenmesi  
-- [ ] Basit bir arayüz ile grafiğin görüntülenmesi  
-- [ ] Algoritma sonuçlarının karşılaştırılması  
-- [ ] Rapor ve deney sonuçlarının eklenmesi  
+- [+] 250 düğümlü rastgele ağ oluşturma  
+- [+] Düğüm ve bağlantı özelliklerinin atanması  
+- [+] Gecikme, güvenilirlik ve kaynak maliyet fonksiyonlarının yazılması  
+- [+] En az iki optimizasyon algoritmasının eklenmesi  
+- [+] Basit bir arayüz ile grafiğin görüntülenmesi  
+- [+] Algoritma sonuçlarının karşılaştırılması  
+- [+] Rapor ve deney sonuçlarının eklenmesi  
 
 ---
 
@@ -47,12 +121,10 @@ Mert Can AYDIN
 İbrahim USLU  
 Hakan YAVUZ  
 Husam ABDULRAHEEM  
-Khofifrcc  
-Mutiapriani  
+Khofif Rohma Cahyani
+Mutia Apriani  
 
 
 ---
 
-> ## 📌 Not:
-> Proje ilerledikçe kod yapısı, algoritma açıklamaları, test sonuçları ve rapor detayları aşamalı olarak eklenecektir.
 
