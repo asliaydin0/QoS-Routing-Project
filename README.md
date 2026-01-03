@@ -19,11 +19,8 @@ Bu proje, Bilgisayar Ağları dersi kapsamında geliştirilen ve 250 düğümlü
 Algoritmalar aşağıdaki QoS metriklerine göre değerlendirilmiştir:
 
 - Total Delay (Toplam Gecikme)
-
 - Reliability (Güvenilirlik)
-
 - Resource Cost (Kaynak Maliyeti)
-
 - Total Cost (Ağırlıklı Amaç Fonksiyonu)
 
 ## 🧠 Kullanılan Algoritmalar
@@ -31,11 +28,8 @@ Algoritmalar aşağıdaki QoS metriklerine göre değerlendirilmiştir:
 Projede aşağıdaki algoritmalar uygulanmış ve karşılaştırılmıştır(Her algoritma aynı ağ senaryoları ve metrikler altında çalıştırılmıştır:
 
 -Genetik Algoritma (GA)
-
 -Q-Learning
-
 -Yapay Arı Kolonisi (ABC)
-
 -Benzetimli Tavlama (Simulated Annealing – SA)
 
 
@@ -48,28 +42,19 @@ Projede aşağıdaki algoritmalar uygulanmış ve karşılaştırılmıştır(He
 Özellikler:
 
 -Algoritma seçimi
-
 -Kaynak–hedef (S–D) seçimi
-
 -Çoklu algoritma kıyaslama
-
 -Grafiksel performans analizi
-
 -En iyi algoritmanın otomatik önerilmesi
 
 
 ## ⚙️ Kullanılan Teknolojiler ve Kütüphaneler
 
 -Python 3
-
 -PyQt5
-
 -NetworkX
-
 -Matplotlib
-
 -NumPy
-
 -Pandas
 
 
@@ -82,17 +67,13 @@ python GUI.py
 ## 🧪 Test ve Analiz
 
 => Algoritmalar çoklu çalıştırmalar ile test edilmiştir
-
 =>Tutarlılık ve kararlılık analizi yapılmıştır
 
 Performans karşılaştırmaları:
 
 -Maliyet
-
 -Hesaplama süresi
-
 -Gecikme
-
 -Güvenilirlik
 
 =>Sonuçlar CSV dosyaları ve grafikler ile raporlanmıştır
